@@ -1,2 +1,2 @@
 # microfrontend-platform-communications
-Framework agnostic micro-frontend platform Communication
+Web framework(Angular, React, Vue) agnostic micro-frontend platform Communication
