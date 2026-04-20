@@ -1,6 +1,9 @@
 # @lkovari/microfrontend-platform-communication current status is a PoC.
 
-The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication`. The same documentation is kept in [`mfe-platform-communication/README.md`](mfe-platform-communication/README.md) (the README npm shows for the package).
+The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication
+
+# WARNING!
+In the current version of the library, I put in basically everything that came to my mind (from the simplest stuff to more complex things — kind of like throwing in everything from a wooden stick to a carousel), and we will refine it later.
 
 # @lkovari/microfrontend-platform-communication
 
