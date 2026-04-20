@@ -1,0 +1,1 @@
+Examples for a shell host plus Angular, React, and Vue remotes can be added here to demonstrate `person:updated` and `orders:filters-changed` flows. The published library is complete without this folder.
