@@ -1,62 +1,100 @@
+# @lkovari/microfrontend-platform-communication current status is a PoC.
+
+The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication`. The same documentation is kept in [`mfe-platform-communication/README.md`](mfe-platform-communication/README.md) (the README npm shows for the package).
+
 # @lkovari/microfrontend-platform-communication
 
-Framework-agnostic, host-orchestrated messaging for native-federated microfrontends (Angular, React, Vue). The runtime bus uses the browser `EventTarget` and `CustomEvent` primitives behind a typed API. Contracts are pure TypeScript types; Zod validates every envelope at the bus boundary.
+This library is framework-agnostic solution for messaging between microfrontends (Angular, React, Vue).
+It use host-orchestrated communication model. Runtime bus is based on browser EventTarget and CustomEvent,
+wrapped with typed API. Contracts are simple TypeScript types and validation is done by Zod on bus boundary.
 
 ## Topology
 
+Microfrontends (remotes) are not communicate directly with each other.
+All messages go through Host (Shell Bus).
+
 ```text
- ┌────────────┐      typed messages      ┌───────────────┐
- │  Remote A  │ ───────────────────────▶ │               │
- └────────────┘                          │               │
-                                         │    Host /     │
- ┌────────────┐      typed messages      │   Shell Bus   │
- │  Remote B  │ ───────────────────────▶ │ + Host Bridge │
- └────────────┘                          │ + Policy      │
-                                         │ + State sync  │
- ┌────────────┐      typed messages      │               │
- │  Remote C  │ ───────────────────────▶ │               │
- └────────────┘                          └──────┬────────┘
-                                                │
-                                                ▼
-                                         ┌───────────────┐
-                                         │ Backend / BFF │
-                                         └───────────────┘
+                             typed messages
+ Remote A  ──────────────────────────────►  ┌────────────────────────────┐
+                                             │ Host / Shell Bus           │
+                             typed messages  │ + Host Bridge              │
+ Remote B  ──────────────────────────────►  │ + Policy                   │
+                                             │ + State sync               │
+                             typed messages  │                            │
+ Remote C  ──────────────────────────────►  └─────────────┬──────────────┘
+                                                         │
+                                                         ▼
+                                                ┌──────────────────────────────────────┐
+                                                │ Backend / BFF (optional, e.g. NestJS)│
+                                                └──────────────────────────────────────┘
 ```
 
-Host and remotes share one bus instance exposed through `window.__MFE_BRIDGE__` (versioned handshake). Remote-to-remote traffic uses the same bus with `target` addressing; separate `createBus()` instances never see each other’s events.
+**Remotes → Host**
+
+```text
+Remote A ---> Host Bus
+Remote B ---> Host Bus
+Remote C ---> Host Bus
+```
+
+**Remote → Remote (only via Host; no direct remote-to-remote)**
+
+```text
+Remote A ---> Host Bus <--- Remote B
+Remote C ---> Host Bus
+```
+
+**Host → Remotes (simplified)**
+
+```text
+Host Bus ---> Remote A
+Host Bus ---> Remote B
+Host Bus ---> Remote C
+```
+
+Host may also connect to Backend / BFF (optional, e.g. NestJS).
+
+One shared bus instance exist, exposed via window.__MFE_BRIDGE__.
+
+Important:
+- Remote-to-remote communication also go via Host
+- Separate createBus() instances cannot see each other events
 
 ## Install
 
-```bash
 pnpm add @lkovari/microfrontend-platform-communication zod
-```
 
-Peer dependencies (optional by subpath): `@angular/core`, `react`, `rxjs`, `vue`.
+Optional peer dependencies:
+- @angular/core
+- react
+- rxjs
+- vue
 
 ## Entry points
 
-- `@lkovari/microfrontend-platform-communication` — contracts, schemas, core, Angular adapter
-- `@lkovari/microfrontend-platform-communication/contracts` — types only
-- `@lkovari/microfrontend-platform-communication/schemas` — Zod schemas
-- `@lkovari/microfrontend-platform-communication/core` — `createBus`, `createHostBridge`, policy, registry, state sync
-- `@lkovari/microfrontend-platform-communication/angular` — `provideBus`, `provideHostBridge`, `BusService`
-- `@lkovari/microfrontend-platform-communication/react` — `BusProvider`, `HostBridgeProvider`, hooks
-- `@lkovari/microfrontend-platform-communication/vue` — `createBusPlugin`, `createHostBridgePlugin`, composables
+- root package: contracts, schemas, core, Angular adapter
+- /contracts: only types
+- /schemas: Zod validation schemas
+- /core: createBus, createHostBridge, policy, registry, state sync
+- /angular: Angular providers and service
+- /react: React providers and hooks
+- /vue: Vue plugins and composables
 
-React and Vue hooks are not re-exported from the package root to avoid name collisions; import them from `/react` or `/vue`.
+Note:
+React and Vue hooks are NOT exported from root, must import from /react or /vue.
 
 ## Quick usage
 
-Host creates the bus with validators keyed by `messageName`, then the bridge:
+Host side:
 
-```ts
-import { createBus, createHostBridge } from '@lkovari/microfrontend-platform-communication/core';
-import { EventMessageSchema } from '@lkovari/microfrontend-platform-communication/schemas';
+Create bus with validators, then create bridge.
+
+Example:
 
 const bus = createBus({
   appId: 'shell-host',
   dispatch: 'microtask',
-  dedupe: { enabled: true, windowMs: 5_000 },
+  dedupe: { enabled: true, windowMs: 5000 },
   validators: {
     'orders:filters-changed': EventMessageSchema,
   },
@@ -68,68 +106,232 @@ createHostBridge({
   remotes: ['remote-orders', 'remote-profile'],
   stateSync: { enabled: true, initialRevisions: { person: 0 } },
 });
-```
 
-Remotes obtain the same bus via `window.__MFE_BRIDGE__.getBus()` and subscribe with an explicit `subscriberId` matching their remote id when using targeted messages:
+Remote side:
 
-```ts
+Get bus from global bridge:
+
 const bridge = window.__MFE_BRIDGE__;
 const bus = bridge.getBus();
+
+Subscribe:
 
 bus.subscribe(
   'person:updated',
   (msg) => console.log(msg.payload),
   { subscriberId: 'remote-profile' },
 );
-```
 
-Use `bridge.tryPublish(message)` when the shell should normalize missing `messageId` / `correlationId` / `occurredAtUtc` and surface `Ack` / `Nack` results (for example `restricted` sensitivity yields `errorCode: 'unauthorized'`).
+Publishing:
 
-## Message categories (examples)
+Use bridge.tryPublish(message)
+Host will fill missing metadata like:
+- messageId
+- correlationId
+- occurredAtUtc
 
-| Area | Examples |
+Also return Ack / Nack result.
+
+## Message kinds (`MessageKind`)
+
+The sections **`event`** through **`user-context`** below are the kinds implemented in code. See also **[Possible future kinds (not in code)](#possible-future-kinds-not-in-code)** for ideas not in `MessageKind` today.
+
+Every message has a `kind` field that classifies how the bus and host should treat it. All kinds share the same base envelope (`messageName`, `messageVersion`, `messageId`, `correlationId`, optional `causationId`, `source`, optional `target`, `occurredAtUtc`, `sensitivity`, optional `validationDescriptor`). Zod schemas live under `/schemas`; TypeScript contracts under `/contracts`.
+
+### `event`
+
+Fire-and-forget notifications: something already happened and subscribers may react. There is no built-in reply channel; use `correlationId` / separate messages if you need follow-up traffic.
+
+| Field | Role |
 | --- | --- |
-| Auth and session | `auth:login-completed`, `auth:logout-completed`, `session:expired` |
-| User and roles | `user:context-updated`, `roles:changed` |
-| Navigation | `navigation:requested`, `navigation:completed` |
-| Cross-app context | `tenant:changed`, `person:updated`, `orders:filters-changed` |
-| Feature / runtime | `feature-flags:updated`, `runtime:manifest-updated` |
-| Invalidation | `cache:invalidated`, `<slice>:refresh-requested` |
-| Health | `remote:ready`, `remote:failed`, `telemetry:event` |
+| `eventKind` | Non-empty string sub-type of the event (e.g. domain-specific label alongside `messageName`). |
+| `payload` | Arbitrary data for subscribers. |
+
+Typical uses: filters changed, navigation completed, feature flags updated, remote readiness signals.
+
+### `command`
+
+An imperative action the host or another participant should perform. Commands often imply acknowledgement semantics at the bridge layer (see host bridge / policy); the contract includes an optional timeout for waiting on that acknowledgement. (I don't know this will be real usage or not currently)
+
+| Field | Role |
+| --- | --- |
+| `commandName` | Non-empty string naming the command. |
+| `payload` | Arguments for the handler. |
+| `ackTimeoutMs` | Optional positive integer: how long to wait for an ack, in milliseconds. |
+
+Typical uses: request navigation, trigger a host-side operation, ask another remote to refresh.
+
+### `query`
+
+A request for information that expects a result shape. The contract allows naming the query, passing input `payload`, and optionally describing or bounding the response and wait time. (I don't know this will be real usage or not currently)
+
+| Field | Role |
+| --- | --- |
+| `queryName` | Non-empty string naming the query. |
+| `payload` | Input to the query. |
+| `expectedResult` | Optional string hint (e.g. result type or schema id) for validators or routing. |
+| `timeoutMs` | Optional positive integer: how long to wait for a result. |
+
+Typical uses: read shared UI or host state without mutating it, resolve a capability or configuration snapshot.
+
+### `state`
+
+Synchronized shared state under a key, with explicit revisions and an operation that says how to apply the payload. Host bridge state sync is aligned with this model when enabled.
+
+| Field | Role |
+| --- | --- |
+| `stateKey` | Non-empty string identifying the state slice (e.g. `person`, domain entity). |
+| `operation` | One of `replace`, `patch`, `remove`, `reset` (see below). |
+| `revision` | Non-negative integer; monotonic per `stateKey` for optimistic concurrency and ordering. |
+| `payload` | The state value or delta, depending on operation and convention. |
+
+**State operations**
+
+| Operation | Meaning |
+| --- | --- |
+| `replace` | Substitute the entire value for `stateKey` with `payload`. |
+| `patch` | Apply a partial update; `payload` is typically a merge or JSON-patch style delta (by convention). |
+| `remove` | Drop the value for `stateKey` (payload may be empty or carry metadata). |
+| `reset` | Restore initial or default state for that key. |
+
+Typical uses: shared entity snapshot across remotes, host-managed session-scoped data with revision checks.
+
+### `user-context`
+
+A dedicated kind for the signed-in user’s **non-sensitive** display and routing context. The payload is structured (`UserContext`), not an unconstrained blob: user id, display name, optional avatar, UI roles, optional tenant, locale, feature flags, optional session version string.
+
+Typical uses: broadcast after login, tenant or locale switch, role changes that affect UI only. Tokens and authorization matrices still belong on the server; this kind is for coordination and display alignment across microfrontends.
+
+## Possible future kinds (not in code)
+
+These values are **not** part of `MessageKind` in this repository; they are suggestions only. Teams sometimes model similar ideas on top of `event`, `command`, or `query`, or keep a separate enum outside the bus contracts:
+
+| Kind (hypothetical) | Why it might exist |
+| --- | --- |
+| `notification` | User-visible alerts (toast, banner) with severity, deduplication id, and optional action ids—distinct from domain `event` noise. |
+| `error` | Standardized failure envelope (code, message, retryable flag) for correlated replies instead of ad hoc error shapes in payloads. |
+| `lifecycle` | Explicit mount/unmount, activation, or route-attached scope for a remote (host orchestration). |
+| `capability` | Advertise or negotiate features, versions, or message names a remote supports (discovery). |
+| `heartbeat` | Cheap periodic liveness or SLA probes, possibly with stricter TTL than generic events. |
+| `dead-letter` | Move undeliverable or invalid messages to an auditable channel for tooling. |
+
+Adding a new kind would require updating `MessageKind`, the corresponding Zod schemas, host bridge policy, and documentation together.
+
+## Message categories
+
+Auth:
+- auth:login-completed
+- auth:logout-completed
+- session:expired
+
+User:
+- user:context-updated
+- roles:changed
+
+Navigation:
+- navigation:requested
+- navigation:completed
+
+Cross-app:
+- tenant:changed
+- person:updated
+- orders:filters-changed
+
+Runtime:
+- feature-flags:updated
+- runtime:manifest-updated
+
+Invalidation:
+- cache:invalidated
+- refresh-requested
+
+Health:
+- remote:ready
+- remote:failed
+- telemetry:event
 
 ## Security model
 
-Display-safe context may cross the bus (names, tenant, locale, UI role hints, feature flags, navigation context). Do not put access tokens, refresh tokens, full claim sets, or authoritative permission matrices on the bus. Treat `UserContext.rolesForUi` as a UX hint only; the backend remains the source of truth for authorization.
+Important rule:
+Do NOT send sensitive data via bus.
 
-## Three kinds of state
+Allowed:
+- names
+- tenant
+- locale
+- UI roles (only for display)
+- feature flags
 
-Distinguish server truth, cached client snapshots, and derived UI state. The bus coordinates signals between apps; it does not replace your API or security boundary.
+Not allowed:
+- access tokens
+- refresh tokens
+- full claims
+- permission matrix
 
-## When this pattern fits
+Backend is ALWAYS source of truth.
 
-Strong fit: multiple frameworks, independent remotes, backend-first security, low lock-in. Less sufficient alone for guaranteed delivery, complex cross-app orchestration, or teams without disciplined public contracts.
+## Three types of state
+
+1. Server state (truth)
+2. Client cached state
+3. UI derived state
+
+Bus is only for coordination, NOT replace API or security.
+
+## When to use
+
+Good fit:
+- multiple frameworks
+- independent remotes
+- backend-driven security
+- low coupling
+
+Not enough alone for:
+- guaranteed delivery
+- complex orchestration
+- weak contract discipline teams
 
 ## Design summary
 
-- One package with tree-shakable subpaths.
-- Contracts describe message shapes; Zod validates; core enforces policy, dedupe, TTL hooks, correlation, and optional state sync.
-- Host-orchestrated routing with `target` vs broadcast semantics on a single bus instance.
-- Default sensitivity policy rejects `restricted` messages unless disabled.
+- Single package with subpath exports
+- Contracts define message structure
+- Zod validate messages
+- Core handle policy, dedupe, TTL, correlation
+- Host control routing (target vs broadcast)
+- Restricted messages blocked by default
 
 ## Adapter examples
 
-**Angular** — `provideBus` / `provideHostBridge`, `BusService.messages$('person:updated')` with `takeUntilDestroyed`.
+Angular:
+- provideBus
+- provideHostBridge
+- BusService.messages$('person:updated')
 
-**React** — `BusProvider` + `HostBridgeProvider`, `useSubscribe('person:updated', handler)`.
+React:
+- BusProvider
+- HostBridgeProvider
+- useSubscribe()
 
-**Vue** — `createBusPlugin` then `createHostBridgePlugin`, `useSubscribe` in `setup`.
-
-See the spec document you used to generate this library for full snippet blocks.
+Vue:
+- createBusPlugin
+- createHostBridgePlugin
+- useSubscribe()
 
 ## Examples workspace
 
-The `examples/` folder is reserved for a shell plus Angular, React, and Vue remotes demonstrating `person:updated` and `orders:filters-changed`. It is not required to use the published package.
+examples/ folder contain demo:
+- shell
+- Angular remote
+- React remote
+- Vue remote
+
+It show:
+- person:updated
+- orders:filters-changed
+
+Not required for usage.
 
 ## License
 
 MIT
+
