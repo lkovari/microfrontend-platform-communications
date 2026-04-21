@@ -3,7 +3,7 @@
 The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication
 
 # WARNING!
-In the current version of the library, I put in basically everything that came to my mind (from the simplest stuff to more complex things — kind of like throwing in everything from a wooden stick to a carousel), and we will refine it later.
+In the current version of the library, I basically put in everything that came to my mind — from the simplest stuff to more complex features — and we’ll refine it later.
 
 # @lkovari/microfrontend-platform-communication
 
