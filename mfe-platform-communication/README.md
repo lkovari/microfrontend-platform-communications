@@ -6,6 +6,9 @@ The publishable package lives in [`mfe-platform-communication/`](mfe-platform-co
 # WARNING!
 In the current version of the library, I basically put in everything that came to my mind — from the simplest stuff to more complex features — and we’ll refine it later.
 
+## Security Privacy
+Security and Privacy: Prioritize the protection of sensitive data by implementing robust security measures to prevent unauthorized access. Adhere to best practices in data sharing to maintain the confidentiality and privacy of user information. Safety and privacy should always be at the forefront of your data communication strategy.
+
 # @lkovari/microfrontend-platform-communication
 
 This library is framework-agnostic solution for messaging between microfrontends (Angular, React, Vue).
