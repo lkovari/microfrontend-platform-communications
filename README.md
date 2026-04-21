@@ -1,6 +1,7 @@
 # @lkovari/microfrontend-platform-communication current status is a PoC.
 
 The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication
+(https://www.npmjs.com/package/@lkovari/microfrontend-platform-communication)
 
 # WARNING!
 In the current version of the library, I basically put in everything that came to my mind — from the simplest stuff to more complex features — and we’ll refine it later.
