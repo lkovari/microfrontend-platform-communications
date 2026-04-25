@@ -1,10 +1,10 @@
 # Angular specific
-/dist/
+dist/
 /out-tsc/
 /tmp/
 /coverage/
 /e2e/test-output/
-
+.cursor/
 
 # Node modules and dependency files
 node_modules/
