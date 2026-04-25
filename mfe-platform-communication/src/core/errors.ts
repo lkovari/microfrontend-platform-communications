@@ -21,3 +21,16 @@ export class BusValidationError extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
+
+export type HostBridgeErrorCode = 'conflict' | 'invalid-global' | 'mismatch';
+
+export class HostBridgeError extends Error {
+  readonly code: HostBridgeErrorCode;
+
+  constructor(message: string, code: HostBridgeErrorCode = 'conflict') {
+    super(message);
+    this.name = 'HostBridgeError';
+    this.code = code;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}

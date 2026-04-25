@@ -48,6 +48,7 @@ export interface CreateBusOptions {
   readonly messageTtlMs?: number;
   readonly enableDefaultSensitivityPolicy?: boolean;
   readonly onDispatchError?: (error: unknown) => void;
+  readonly onSubscriberError?: (error: unknown) => void;
 }
 
 const BUS_EVENT_TYPE = '@lkovari/microfrontend-platform-communication/message';
@@ -85,6 +86,18 @@ export function createBus(options: CreateBusOptions): Bus {
   const listenerRecords: { readonly messageName: string; readonly listener: Listener }[] = [];
   const observeRecords: { readonly listener: Listener }[] = [];
   const beforeDeliverHooks: ((message: MessageBase) => void)[] = [];
+
+  function notifySubscriberError(error: unknown): void {
+    if (options.onSubscriberError) {
+      options.onSubscriberError(error);
+      return;
+    }
+    if (options.onDispatchError) {
+      options.onDispatchError(error);
+      return;
+    }
+    console.error('[mfe-bus] subscriber handler error', error);
+  }
 
   function validate(message: MessageBase): void {
     const schema = options.validators[message.messageName];
@@ -186,7 +199,9 @@ export function createBus(options: CreateBusOptions): Bus {
         if (detail.target !== undefined && detail.target !== subscriberId) {
           return;
         }
-        void Promise.resolve(handler(detail as M)).catch(() => undefined);
+        void Promise.resolve(handler(detail as M)).catch((err: unknown) => {
+          notifySubscriberError(err);
+        });
       };
 
       target.addEventListener(BUS_EVENT_TYPE, listener);
@@ -204,7 +219,11 @@ export function createBus(options: CreateBusOptions): Bus {
     observeAll(handler: (message: MessageBase) => void): Unsubscribe {
       const listener: Listener = (event: Event) => {
         const ce = event as CustomEvent<MessageBase>;
-        handler(ce.detail);
+        try {
+          handler(ce.detail);
+        } catch (err: unknown) {
+          notifySubscriberError(err);
+        }
       };
       target.addEventListener(BUS_EVENT_TYPE, listener);
       observeRecords.push({ listener });

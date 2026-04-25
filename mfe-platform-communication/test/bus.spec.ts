@@ -371,4 +371,142 @@ describe('createBus', () => {
     expect(onDispatchError).toHaveBeenCalledTimes(1);
     bus.dispose();
   });
+
+  it('onSubscriberError is invoked when subscribe handler returns a rejected Promise', async () => {
+    const subscriberErrors: unknown[] = [];
+    const onSubscriberError = (error: unknown): void => {
+      subscriberErrors.push(error);
+    };
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'microtask',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+      onSubscriberError,
+    });
+    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+      return Promise.reject(new Error('async subscriber failure'));
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(subscriberErrors).toHaveLength(1);
+    const first = subscriberErrors[0];
+    expect(String(first instanceof Error ? first.message : first)).toBe('async subscriber failure');
+    bus.dispose();
+  });
+
+  it('onSubscriberError is preferred over onDispatchError for subscribe failures', async () => {
+    const onDispatchError = vi.fn();
+    const subscriberErrors: unknown[] = [];
+    const onSubscriberError = (error: unknown): void => {
+      subscriberErrors.push(error);
+    };
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'microtask',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+      onDispatchError,
+      onSubscriberError,
+    });
+    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+      return Promise.reject(new Error('x'));
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(subscriberErrors).toHaveLength(1);
+    expect(onDispatchError).not.toHaveBeenCalled();
+    bus.dispose();
+  });
+
+  it('logs to console when subscribe fails and no error handlers are set', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'microtask',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+      return Promise.reject(new Error('unhandled sub'));
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(errSpy).toHaveBeenCalled();
+    const first = errSpy.mock.calls[0];
+    expect(first).toBeDefined();
+    if (first) {
+      expect(String(first[0])).toContain('mfe-bus');
+    }
+    errSpy.mockRestore();
+    bus.dispose();
+  });
+
+  it('observeAll forwards sync handler throws to onSubscriberError', () => {
+    const onSubscriberError = vi.fn();
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+      onSubscriberError,
+    });
+    bus.observeAll(() => {
+      throw new Error('observe all boom');
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(onSubscriberError).toHaveBeenCalledOnce();
+    bus.dispose();
+  });
 });

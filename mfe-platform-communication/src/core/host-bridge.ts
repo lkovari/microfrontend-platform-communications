@@ -1,7 +1,7 @@
 import type { MessageBase } from '../contracts/message-base.js';
 import type { AckResult } from '../contracts/envelopes.js';
 import type { Bus } from './bus.js';
-import { BusPolicyError, BusValidationError } from './errors.js';
+import { BusPolicyError, BusValidationError, HostBridgeError } from './errors.js';
 import { attachStateSync, type StateSyncAttachOptions, type StateSyncCoordinator } from './state-sync.js';
 
 export const MFE_BRIDGE_PROTOCOL_VERSION = 1 as const;
@@ -10,6 +10,7 @@ export interface MfeBridgeHandle {
   readonly protocolVersion: typeof MFE_BRIDGE_PROTOCOL_VERSION;
   readonly appId: string;
   readonly remotes: readonly string[];
+  readonly stateSync?: StateSyncAttachOptions;
   readonly getBus: () => Bus;
   tryPublish: (message: MessageBase) => AckResult;
   dispose: () => void;
@@ -21,11 +22,14 @@ declare global {
   }
 }
 
+export type HostBridgeConflictPolicy = 'throw' | 'return-existing' | 'replace';
+
 export interface CreateHostBridgeOptions {
   readonly appId: string;
   readonly bus: Bus;
   readonly remotes: readonly string[];
   readonly stateSync?: StateSyncAttachOptions;
+  readonly onConflict?: HostBridgeConflictPolicy;
 }
 
 function withGeneratedIds(message: MessageBase): MessageBase {
@@ -66,7 +70,142 @@ function toAckResult(correlationId: string, err: unknown): AckResult {
   };
 }
 
+function remotesEqual(
+  a: readonly string[] | undefined,
+  b: readonly string[] | undefined,
+): boolean {
+  if (a === undefined && b === undefined) {
+    return true;
+  }
+  if (a === undefined || b === undefined) {
+    return false;
+  }
+  if (a.length !== b.length) {
+    return false;
+  }
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stateSyncMatches(
+  a: StateSyncAttachOptions | undefined,
+  b: StateSyncAttachOptions | undefined,
+): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+export function isValidMfeBridgeHandle(value: unknown): value is MfeBridgeHandle {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  if (Reflect.get(value, 'protocolVersion') !== MFE_BRIDGE_PROTOCOL_VERSION) {
+    return false;
+  }
+  const appIdUnknown: unknown = Reflect.get(value, 'appId');
+  if (typeof appIdUnknown !== 'string' || appIdUnknown.length === 0) {
+    return false;
+  }
+  if (!Array.isArray(Reflect.get(value, 'remotes'))) {
+    return false;
+  }
+  if (
+    typeof Reflect.get(value, 'getBus') !== 'function' ||
+    typeof Reflect.get(value, 'tryPublish') !== 'function' ||
+    typeof Reflect.get(value, 'dispose') !== 'function'
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function assertReturnableExisting(
+  existing: MfeBridgeHandle,
+  options: CreateHostBridgeOptions,
+): void {
+  if (existing.appId !== options.appId) {
+    throw new HostBridgeError(
+      'Existing host bridge has a different appId; cannot reuse with onConflict: return-existing',
+      'mismatch',
+    );
+  }
+  if (existing.getBus() !== options.bus) {
+    throw new HostBridgeError(
+      'Existing host bridge is bound to a different bus instance; cannot reuse with onConflict: return-existing',
+      'mismatch',
+    );
+  }
+  if (!remotesEqual(options.remotes, existing.remotes)) {
+    throw new HostBridgeError(
+      'Existing host bridge has different remotes; cannot reuse with onConflict: return-existing',
+      'mismatch',
+    );
+  }
+  if (!stateSyncMatches(options.stateSync, existing.stateSync)) {
+    throw new HostBridgeError(
+      'Existing host bridge has different stateSync options; cannot reuse with onConflict: return-existing',
+      'mismatch',
+    );
+  }
+}
+
+function resolveWindowConflict(
+  options: CreateHostBridgeOptions,
+  mode: HostBridgeConflictPolicy,
+): MfeBridgeHandle | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  const existing = window.__MFE_BRIDGE__;
+  if (existing === undefined) {
+    return null;
+  }
+
+  if (mode === 'return-existing') {
+    if (!isValidMfeBridgeHandle(existing)) {
+      throw new HostBridgeError(
+        'window.__MFE_BRIDGE__ is not a valid MfeBridgeHandle. Remove it, use onConflict: replace, or fix the page script that set it.',
+        'invalid-global',
+      );
+    }
+    assertReturnableExisting(existing, options);
+    return existing;
+  }
+
+  if (mode === 'throw') {
+    if (!isValidMfeBridgeHandle(existing)) {
+      throw new HostBridgeError(
+        'window.__MFE_BRIDGE__ is already set to an invalid value. Remove it or use onConflict: replace before initializing the host bridge.',
+        'invalid-global',
+      );
+    }
+    throw new HostBridgeError(
+      'Host bridge already initialized. Dispose the existing handle, use onConflict: return-existing with matching options, or onConflict: replace.',
+      'conflict',
+    );
+  }
+
+  if (isValidMfeBridgeHandle(existing)) {
+    existing.dispose();
+  } else {
+    delete window.__MFE_BRIDGE__;
+  }
+  return null;
+}
+
 export function createHostBridge(options: CreateHostBridgeOptions): MfeBridgeHandle {
+  const mode: HostBridgeConflictPolicy = options.onConflict ?? 'throw';
+
+  if (typeof window !== 'undefined') {
+    const early = resolveWindowConflict(options, mode);
+    if (early) {
+      return early;
+    }
+  }
+
   let stateCoordinator: StateSyncCoordinator | undefined;
   if (options.stateSync) {
     stateCoordinator = attachStateSync(options.bus, options.stateSync);
@@ -76,6 +215,7 @@ export function createHostBridge(options: CreateHostBridgeOptions): MfeBridgeHan
     protocolVersion: MFE_BRIDGE_PROTOCOL_VERSION,
     appId: options.appId,
     remotes: options.remotes,
+    ...(options.stateSync ? { stateSync: options.stateSync } : {}),
     getBus: () => options.bus,
     tryPublish: (message: MessageBase) => {
       const correlationId = message.correlationId || crypto.randomUUID();

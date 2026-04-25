@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBus } from '../src/core/bus.js';
-import { createHostBridge, MFE_BRIDGE_PROTOCOL_VERSION } from '../src/core/host-bridge.js';
+import { HostBridgeError } from '../src/core/errors.js';
+import {
+  createHostBridge,
+  isValidMfeBridgeHandle,
+  MFE_BRIDGE_PROTOCOL_VERSION,
+} from '../src/core/host-bridge.js';
 import type { EventMessage } from '../src/contracts/event-message.js';
 import { OrdersFiltersEventSchema } from './helpers.js';
 import { StateMessageSchema } from '../src/schemas/state-message.schema.js';
@@ -218,4 +223,151 @@ describe('createHostBridge', () => {
     bridge.dispose();
     bus.dispose();
   });
+
+  it('default onConflict throws when a valid bridge is already on window', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const first = createHostBridge({ appId: 'shell-host', bus, remotes: ['a'] });
+    expect(() => createHostBridge({ appId: 'shell-host', bus, remotes: ['a'] })).toThrow(
+      HostBridgeError,
+    );
+    first.dispose();
+    bus.dispose();
+  });
+
+  it('onConflict return-existing returns the same handle when options match', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const first = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['a', 'b'],
+      onConflict: 'return-existing',
+    });
+    const second = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['a', 'b'],
+      onConflict: 'return-existing',
+    });
+    expect(second).toBe(first);
+    expect(window.__MFE_BRIDGE__).toBe(first);
+    first.dispose();
+    bus.dispose();
+  });
+
+  it('onConflict return-existing throws when remotes differ', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const first = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['a'],
+      onConflict: 'return-existing',
+    });
+    expect(() =>
+      createHostBridge({
+        appId: 'shell-host',
+        bus,
+        remotes: ['b'],
+        onConflict: 'return-existing',
+      }),
+    ).toThrow(HostBridgeError);
+    first.dispose();
+    bus.dispose();
+  });
+
+  it('onConflict replace disposes the previous handle and sets a new bridge', () => {
+    const bus1 = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const h1 = createHostBridge({ appId: 'shell-host', bus: bus1, remotes: ['a'] });
+    const bus2 = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const h2 = createHostBridge({
+      appId: 'shell-host',
+      bus: bus2,
+      remotes: ['a'],
+      onConflict: 'replace',
+    });
+    expect(window.__MFE_BRIDGE__).toBe(h2);
+    expect(h1).not.toBe(h2);
+    h2.dispose();
+    bus2.dispose();
+    bus1.dispose();
+  });
+
+  it('throws when window has an invalid global and onConflict is throw', () => {
+    Reflect.set(window, '__MFE_BRIDGE__', { getBus: () => ({}) });
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    expect(() => createHostBridge({ appId: 'shell-host', bus, remotes: ['a'] })).toThrow(
+      HostBridgeError,
+    );
+    bus.dispose();
+  });
+
+  it('onConflict replace removes invalid value from window and creates a real bridge', () => {
+    Reflect.set(window, '__MFE_BRIDGE__', { getBus: () => ({}) });
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const h = createHostBridge({ appId: 'shell-host', bus, remotes: ['a'], onConflict: 'replace' });
+    expect(isValidMfeBridgeHandle(h)).toBe(true);
+    expect(getBusReturnsPublish(h)).toBe(true);
+    h.dispose();
+    bus.dispose();
+  });
+
+  it('isValidMfeBridgeHandle rejects plain objects and accepts real handles', () => {
+    expect(isValidMfeBridgeHandle(null)).toBe(false);
+    expect(isValidMfeBridgeHandle({})).toBe(false);
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const h = createHostBridge({ appId: 'shell-host', bus, remotes: [] });
+    expect(isValidMfeBridgeHandle(h)).toBe(true);
+    h.dispose();
+    bus.dispose();
+  });
 });
+
+function getBusReturnsPublish(bridge: { getBus: () => unknown }): boolean {
+  const b = bridge.getBus();
+  if (b === null || typeof b !== 'object') {
+    return false;
+  }
+  if (!('publish' in b)) {
+    return false;
+  }
+  return typeof Reflect.get(b, 'publish') === 'function';
+}
