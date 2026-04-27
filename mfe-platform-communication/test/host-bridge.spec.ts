@@ -87,7 +87,7 @@ describe('createHostBridge', () => {
       bus,
       remotes: ['remote-orders'],
     });
-    const result = bridge.tryPublish({
+    const inbound: EventMessage<{ filter: string }> = {
       messageName: 'orders:filters-changed',
       messageVersion: 1,
       messageId: crypto.randomUUID(),
@@ -98,7 +98,8 @@ describe('createHostBridge', () => {
       eventKind: 'orders.filters-changed',
       sensitivity: 'public',
       payload: { filter: 'open' },
-    });
+    };
+    const result = bridge.tryPublish(inbound);
     expect(result.accepted).toBe(true);
     if (result.accepted) {
       expect(result.accepted).toBe(true);
