@@ -1,17 +1,5 @@
-import type { MessageBase } from './message-base.js';
+import type { z } from 'zod';
+import type { UserContextMessageSchema, UserContextSchema } from '../schemas/user-context-message.schema.js';
 
-export interface UserContext {
-  readonly userId: string;
-  readonly displayName: string;
-  readonly avatarUrl?: string;
-  readonly rolesForUi: readonly string[];
-  readonly tenantId?: string;
-  readonly locale?: string;
-  readonly featureFlags?: Readonly<Record<string, boolean>>;
-  readonly sessionVersion?: string;
-}
-
-export interface UserContextMessage extends MessageBase {
-  readonly kind: 'user-context';
-  readonly payload: UserContext;
-}
+export type UserContext = z.infer<typeof UserContextSchema>;
+export type UserContextMessage = z.infer<typeof UserContextMessageSchema>;

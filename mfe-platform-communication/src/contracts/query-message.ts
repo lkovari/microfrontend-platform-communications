@@ -1,9 +1,5 @@
-import type { MessageBase } from './message-base.js';
+import type { z } from 'zod';
+import type { QueryMessageSchema } from '../schemas/query-message.schema.js';
 
-export interface QueryMessage<TPayload = unknown, _TResult = unknown> extends MessageBase {
-  readonly kind: 'query';
-  readonly queryName: string;
-  readonly payload: TPayload;
-  readonly expectedResult?: string;
-  readonly timeoutMs?: number;
-}
+type QueryMessageBase = z.infer<typeof QueryMessageSchema>;
+export type QueryMessage<TPayload = unknown> = Omit<QueryMessageBase, 'payload'> & { payload: TPayload };

@@ -6,10 +6,11 @@ import { render, cleanup, act } from '@testing-library/react';
 import { createApp, defineComponent, ref } from 'vue';
 import { createBus } from '../src/core/bus.js';
 import type { Bus } from '../src/core/bus.js';
-import { BUS_TOKEN, BusService } from '../src/angular/index.js';
-import { BusProvider, useBus, useSubscribe } from '../src/react/index.js';
+import { BUS_TOKEN, BusService, HostBridgeService } from '../src/angular/index.js';
+import { BusProvider, HostBridgeProvider, useBus, useSubscribe } from '../src/react/index.js';
 import { createBusPlugin, useBus as useVueBus, useSubscribe as useVueSubscribe } from '../src/vue/index.js';
 import type { EventMessage } from '../src/contracts/event-message.js';
+import type { MessageBase } from '../src/contracts/message-base.js';
 import { OrdersFiltersEventSchema } from './helpers.js';
 
 describe('framework adapters', () => {
@@ -71,6 +72,83 @@ describe('framework adapters', () => {
     injector.get(BUS_TOKEN).dispose();
   });
 
+  it('Angular BusService throws readable error when provideBus is missing', () => {
+    const injector = Injector.create({
+      providers: [BusService],
+    });
+    const busSvc = injector.get(BusService);
+    expect(() =>
+      busSvc.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'x',
+        occurredAtUtc: new Date().toISOString(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'public',
+        payload: { filter: 'open' },
+      }),
+    ).toThrow('Call provideBus() in your application providers before injecting BusService.');
+    expect(() =>
+      busSvc.request<EventMessage<{ filter: string }>, EventMessage<{ filter: string }>>({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'x',
+        occurredAtUtc: new Date().toISOString(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'public',
+        payload: { filter: 'open' },
+      }),
+    ).toThrow('Call provideBus() in your application providers before injecting BusService.');
+    let didError = false;
+    busSvc.messages$<EventMessage<{ filter: string }>>('orders:filters-changed').subscribe({
+      error: () => {
+        didError = true;
+      },
+    });
+    expect(didError).toBe(true);
+  });
+
+  it('Angular HostBridgeService throws readable error when provideHostBridge is missing', () => {
+    const injector = Injector.create({
+      providers: [
+        {
+          provide: BUS_TOKEN,
+          useFactory: () =>
+            createBus({
+              appId: 'shell',
+              dispatch: 'sync',
+              validators: {},
+              allowUnregisteredMessageNames: true,
+            }),
+        },
+        HostBridgeService,
+      ],
+    });
+    const service = injector.get(HostBridgeService);
+    expect(() => service.getBus()).toThrow(
+      'Call provideHostBridge() in your application providers before injecting HostBridgeService.',
+    );
+    expect(() =>
+      service.tryPublish({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'x',
+        occurredAtUtc: new Date().toISOString(),
+        kind: 'event',
+        sensitivity: 'public',
+      } satisfies MessageBase),
+    ).toThrow('Call provideHostBridge() in your application providers before injecting HostBridgeService.');
+    injector.get(BUS_TOKEN).dispose();
+  });
+
   it('React useSubscribe cleans up on unmount', () => {
     let count = 0;
     let bus: Bus | null = null;
@@ -125,6 +203,90 @@ describe('framework adapters', () => {
       });
     });
     expect(count).toBe(1);
+  });
+
+  it('React HostBridgeProvider does not recreate bridge when remotes values are unchanged', () => {
+    function Probe(props: { readonly tick: number }) {
+      return createElement(HostBridgeProvider, {
+        remotes: ['remote-a'],
+        children: createElement('span', { 'data-testid': `tick-${props.tick}` }),
+      });
+    }
+
+    const ui = render(
+      createElement(BusProvider, {
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: {},
+        allowUnregisteredMessageNames: true,
+        children: createElement(Probe, { tick: 1 }),
+      }),
+    );
+
+    expect(window.__MFE_BRIDGE__).toBeDefined();
+
+    expect(() =>
+      ui.rerender(
+        createElement(BusProvider, {
+          appId: 'shell',
+          dispatch: 'sync',
+          validators: {},
+          allowUnregisteredMessageNames: true,
+          children: createElement(Probe, { tick: 2 }),
+        }),
+      ),
+    ).not.toThrow();
+
+    ui.unmount();
+  });
+
+  it('React useSubscribe uses the latest inline handler closure after rerender', () => {
+    const received: string[] = [];
+    let bus: Bus | null = null;
+
+    function Probe(props: { readonly label: string }) {
+      bus = useBus();
+      useSubscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+        received.push(props.label);
+      });
+      return null;
+    }
+
+    const ui = render(
+      createElement(BusProvider, {
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: { 'orders:filters-changed': OrdersFiltersEventSchema },
+        children: createElement(Probe, { label: 'first' }),
+      }),
+    );
+
+    ui.rerender(
+      createElement(BusProvider, {
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: { 'orders:filters-changed': OrdersFiltersEventSchema },
+        children: createElement(Probe, { label: 'second' }),
+      }),
+    );
+
+    act(() => {
+      bus?.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'x',
+        occurredAtUtc: new Date().toISOString(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'public',
+        payload: { filter: 'open' },
+      });
+    });
+
+    expect(received).toEqual(['second']);
+    ui.unmount();
   });
 
   it('Vue useSubscribe cleans up on unmount', () => {

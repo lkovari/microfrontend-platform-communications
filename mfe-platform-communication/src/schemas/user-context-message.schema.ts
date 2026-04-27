@@ -5,7 +5,7 @@ export const UserContextSchema = z
   .object({
     userId: z.string().min(1),
     displayName: z.string().min(1),
-    avatarUrl: z.string().optional(),
+    avatarUrl: z.string().url().optional(),
     rolesForUi: z.array(z.string()),
     tenantId: z.string().optional(),
     locale: z.string().optional(),

@@ -2,6 +2,13 @@ import { z } from 'zod';
 
 export const MessageKindSchema = z.enum(['event', 'command', 'query', 'state', 'user-context']);
 export const SensitivitySchema = z.enum(['public', 'internal', 'restricted']);
+export const ValidationDescriptorSchema = z
+  .object({
+    required: z.array(z.string()).optional(),
+    min: z.record(z.number()).optional(),
+    max: z.record(z.number()).optional(),
+  })
+  .strict();
 
 export const MessageBaseSchema = z
   .object({
@@ -15,6 +22,6 @@ export const MessageBaseSchema = z
     occurredAtUtc: z.string().datetime({ offset: true }),
     kind: MessageKindSchema,
     sensitivity: SensitivitySchema,
-    validationDescriptor: z.unknown().optional(),
+    validationDescriptor: ValidationDescriptorSchema.optional(),
   })
   .strict();

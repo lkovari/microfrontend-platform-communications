@@ -14,6 +14,7 @@ export interface BusPublisher {
   request<TReq extends MessageBase, TRes extends MessageBase>(
     message: TReq,
     timeoutMs?: number,
+    responseValidator?: ZodTypeAny,
   ): Promise<TRes>;
 }
 
@@ -175,10 +176,20 @@ export function createBus(options: CreateBusOptions): Bus {
     async request<TReq extends MessageBase, TRes extends MessageBase>(
       message: TReq,
       timeoutMs = 5_000,
+      responseValidator?: ZodTypeAny,
     ): Promise<TRes> {
       const wait = rr.waitForResponse(message.messageId, timeoutMs);
       bus.publish(message);
       const result = await wait;
+      if (result.causationId !== message.messageId) {
+        throw new BusValidationError('response causationId must equal request messageId', 'validation');
+      }
+      if (responseValidator) {
+        const parsed = responseValidator.safeParse(result);
+        if (!parsed.success) {
+          throw new BusValidationError(parsed.error.message, 'validation');
+        }
+      }
       return result as TRes;
     },
 

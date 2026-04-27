@@ -21,6 +21,7 @@ export function createHostBridgePlugin(
         bus,
         remotes: options.remotes,
         ...(options.stateSync ? { stateSync: options.stateSync } : {}),
+        ...(options.onConflict ? { onConflict: options.onConflict } : {}),
       });
       app.provide(HostBridgeKey, bridge);
     },

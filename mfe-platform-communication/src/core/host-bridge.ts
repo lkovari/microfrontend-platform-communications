@@ -35,9 +35,9 @@ export interface CreateHostBridgeOptions {
 function withGeneratedIds(message: MessageBase): MessageBase {
   return {
     ...message,
-    messageId: message.messageId || crypto.randomUUID(),
-    correlationId: message.correlationId || crypto.randomUUID(),
-    occurredAtUtc: message.occurredAtUtc || new Date().toISOString(),
+    messageId: message.messageId ?? crypto.randomUUID(),
+    correlationId: message.correlationId ?? crypto.randomUUID(),
+    occurredAtUtc: message.occurredAtUtc ?? new Date().toISOString(),
   };
 }
 
@@ -45,7 +45,7 @@ function toAckResult(correlationId: string, err: unknown): AckResult {
   const receivedAtUtc = new Date().toISOString();
   if (err instanceof BusPolicyError) {
     return {
-      ok: false,
+      accepted: false,
       correlationId,
       errorCode: err.code,
       message: err.message,
@@ -54,7 +54,7 @@ function toAckResult(correlationId: string, err: unknown): AckResult {
   }
   if (err instanceof BusValidationError) {
     return {
-      ok: false,
+      accepted: false,
       correlationId,
       errorCode: err.code,
       message: err.message,
@@ -62,7 +62,7 @@ function toAckResult(correlationId: string, err: unknown): AckResult {
     };
   }
   return {
-    ok: false,
+    accepted: false,
     correlationId,
     errorCode: 'unknown',
     message: err instanceof Error ? err.message : 'unknown error',
@@ -218,7 +218,7 @@ export function createHostBridge(options: CreateHostBridgeOptions): MfeBridgeHan
     ...(options.stateSync ? { stateSync: options.stateSync } : {}),
     getBus: () => options.bus,
     tryPublish: (message: MessageBase) => {
-      const correlationId = message.correlationId || crypto.randomUUID();
+      const correlationId = message.correlationId ?? crypto.randomUUID();
       try {
         const normalized = withGeneratedIds({
           ...message,
@@ -226,7 +226,7 @@ export function createHostBridge(options: CreateHostBridgeOptions): MfeBridgeHan
         });
         options.bus.publish(normalized);
         return {
-          ok: true,
+          accepted: true,
           correlationId: normalized.correlationId,
           receivedAtUtc: new Date().toISOString(),
         };

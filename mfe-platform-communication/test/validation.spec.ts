@@ -76,7 +76,7 @@ describe('Zod schemas', () => {
     expect(r.success).toBe(false);
   });
 
-  it('ValidationDescriptor metadata is not validated structurally beyond unknown', () => {
+  it('ValidationDescriptor metadata validates known structure', () => {
     const r = UserContextMessageSchema.safeParse({
       ...validBase,
       kind: 'user-context',
@@ -88,5 +88,33 @@ describe('Zod schemas', () => {
       },
     });
     expect(r.success).toBe(true);
+  });
+
+  it('rejects invalid ValidationDescriptor shape', () => {
+    const r = UserContextMessageSchema.safeParse({
+      ...validBase,
+      kind: 'user-context',
+      validationDescriptor: { required: [1] },
+      payload: {
+        userId: 'u1',
+        displayName: 'Ada',
+        rolesForUi: [],
+      },
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects invalid avatarUrl values', () => {
+    const r = UserContextMessageSchema.safeParse({
+      ...validBase,
+      kind: 'user-context',
+      payload: {
+        userId: 'u1',
+        displayName: 'Ada',
+        avatarUrl: 'not-a-url',
+        rolesForUi: [],
+      },
+    });
+    expect(r.success).toBe(false);
   });
 });

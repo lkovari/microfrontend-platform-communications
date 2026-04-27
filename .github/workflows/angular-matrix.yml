@@ -1,0 +1,35 @@
+name: angular-matrix
+
+on:
+  push:
+    paths:
+      - "mfe-platform-communication/**"
+      - ".github/workflows/angular-matrix.yml"
+  pull_request:
+    paths:
+      - "mfe-platform-communication/**"
+      - ".github/workflows/angular-matrix.yml"
+
+jobs:
+  test-angular-matrix:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        angular-version: [17, 18, 19]
+    defaults:
+      run:
+        working-directory: mfe-platform-communication
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: mfe-platform-communication/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm add -D @angular/core@${{ matrix.angular-version }} @angular/compiler@${{ matrix.angular-version }}
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm build

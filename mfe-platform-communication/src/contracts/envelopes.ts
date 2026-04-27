@@ -1,5 +1,5 @@
 export interface Ack {
-  readonly ok: true;
+  readonly accepted: true;
   readonly correlationId: string;
   readonly receivedAtUtc: string;
 }
@@ -14,7 +14,7 @@ export type BusErrorCode =
   | 'unknown';
 
 export interface Nack {
-  readonly ok: false;
+  readonly accepted: false;
   readonly correlationId: string;
   readonly errorCode: BusErrorCode;
   readonly message: string;

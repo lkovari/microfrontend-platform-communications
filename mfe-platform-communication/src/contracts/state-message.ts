@@ -1,11 +1,5 @@
-import type { MessageBase } from './message-base.js';
+import type { z } from 'zod';
+import type { StateMessageSchema, StateOperationSchema } from '../schemas/state-message.schema.js';
 
-export type StateOperation = 'replace' | 'patch' | 'remove' | 'reset';
-
-export interface StateMessage<TState = unknown> extends MessageBase {
-  readonly kind: 'state';
-  readonly stateKey: string;
-  readonly operation: StateOperation;
-  readonly revision: number;
-  readonly payload: TState;
-}
+export type StateOperation = z.infer<typeof StateOperationSchema>;
+export type StateMessage = z.infer<typeof StateMessageSchema>;

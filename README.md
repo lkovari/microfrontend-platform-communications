@@ -340,6 +340,102 @@ It show:
 
 Not required for usage.
 
+## Issues 1-19 updates (what changed and why)
+
+1. Adapter `onConflict` forwarding: Angular/React/Vue now pass `onConflict` to `createHostBridge`; purpose is consistent bridge conflict behavior across frameworks.
+2. Strict request matching: `request()` now resolves only when `response.causationId === request.messageId`; purpose is deterministic request-response correlation.
+3. React HostBridgeProvider stability: remotes dependency tracking is stable for equal values; purpose is avoiding unnecessary bridge recreation.
+4. React `useSubscribe` handler stability: latest handler is used without resubscribe churn; purpose is runtime stability with inline closures.
+5. Angular DI guard errors: BusService and HostBridgeService throw clear provider setup errors; purpose is actionable diagnostics instead of opaque injector failures.
+6. Schema/contract drift hardening: contracts are derived from schemas; purpose is reducing schema/type divergence risk.
+7. Nullish metadata generation: metadata fallback uses nullish behavior; purpose is preserving valid falsy values.
+8. Query contract cleanup: removed phantom `_TResult`; purpose is cleaner and less misleading query typing.
+9. `avatarUrl` validation: URL format validation added; purpose is stronger payload correctness.
+10. Ack semantics: `AckResult` uses `accepted` discriminant; purpose is explicit acceptance semantics.
+11. State patch semantics: patch follows merge-patch style behavior; purpose is predictable and consistent patch application.
+12. Sync dispatcher re-entrancy guard: queue flush is re-entrancy-safe; purpose is preventing recursion-related runtime failures.
+13. Vue subscription lifecycle: `useSubscribe` subscribes on mounted/unmounted lifecycle; purpose is avoiding premature or leaked subscriptions.
+14. HostBridgeService typing: `getBus()` has explicit return type; purpose is API clarity and stronger typing.
+15. Angular provider return types: provider helpers return explicit `EnvironmentProviders`; purpose is stronger Angular API typing.
+16. TTL coverage: dedicated tests verify expired/invalid/future timestamp behavior; purpose is reliable temporal validation.
+17. Root barrel consistency: Angular is not exported from root barrel; purpose is consistent subpath entry strategy.
+18. `validationDescriptor` structure validation: known shape is validated; purpose is stricter runtime metadata validation.
+19. Response validation + Angular matrix CI: optional response validator in request path and Angular compatibility workflow; purpose is runtime safety and multi-version confidence.
+
+## Test list with purpose
+
+### `test/bus.spec.ts`
+- `publish/subscribe roundtrip` - verifies base bus delivery path.
+- `microtask vs synchronous ordering` - verifies dispatch mode ordering guarantees.
+- `subscribe returns Unsubscribe and dispose clears listeners` - verifies unsubscribe and dispose listener cleanup.
+- `reentrancy-safe nested publish via queue` - verifies nested publish ordering without loss.
+- `sync dispatch handles long re-entrant chains without stack overflow` - verifies re-entrant sync stability under depth.
+- `dedupe drops duplicate messageId within window` - verifies deduplication window behavior.
+- `validator rejects invalid envelopes` - verifies schema validation on publish.
+- `targeted delivery only reaches matching subscriberId on shared bus` - verifies one-target routing.
+- `broadcast from host reaches all remotes on shared bus` - verifies host-to-all remotes broadcast.
+- `targeted remote-to-host delivery reaches only host subscriber` - verifies remote-to-host targeted direction.
+- `supports command messages via runtime publish-subscribe` - verifies command kind runtime path.
+- `supports query messages via runtime publish-subscribe` - verifies query kind runtime path.
+- `supports user-context messages via runtime publish-subscribe` - verifies user-context kind runtime path.
+- `request resolves when response references causationId` - verifies strict causation success path.
+- `request times out when response only references correlationId` - verifies correlation-only response is rejected.
+- `request times out when response has no matching causationId or correlationId` - verifies unmatched response timeout.
+- `request times out when causationId does not match request messageId` - verifies strict causation mismatch timeout.
+- `request resolves with first matching response when duplicate responses arrive` - verifies first response wins.
+- `onDispatchError captures microtask validation failures` - verifies dispatch error hook behavior.
+- `onSubscriberError is invoked when subscribe handler returns a rejected Promise` - verifies async subscriber error routing.
+- `onSubscriberError is preferred over onDispatchError for subscribe failures` - verifies subscriber error precedence.
+- `logs to console when subscribe fails and no error handlers are set` - verifies fallback error visibility.
+- `observeAll forwards sync handler throws to onSubscriberError` - verifies observeAll error pipeline.
+- `request validates response when validator is provided` - verifies response schema validation path.
+- `TTL rejects expired and invalid timestamps` - verifies TTL rejection for invalid/expired messages.
+- `TTL accepts future timestamps and non-expired messages` - verifies TTL acceptance for valid timing.
+
+### `test/host-bridge.spec.ts`
+- `exposes window.__MFE_BRIDGE__ with versioned handshake` - verifies bridge registration and protocol metadata.
+- `tryPublish rejects empty string ids and reports Nack` - verifies invalid inbound metadata handling.
+- `tryPublish returns accepted ack for valid messages` - verifies happy-path ack response.
+- `restricted sensitivity returns unauthorized Nack` - verifies sensitivity policy enforcement.
+- `policy hook runs on publish path` - verifies policy integration.
+- `remote-to-remote is host-mediated: separate buses do not cross-deliver` - verifies isolation across independent buses.
+- `remote-to-remote works when sharing host bus instance` - verifies host-mediated remote routing on shared bus.
+- `default onConflict throws when a valid bridge is already on window` - verifies default conflict policy.
+- `onConflict return-existing returns the same handle when options match` - verifies idempotent return-existing behavior.
+- `onConflict return-existing throws when remotes differ` - verifies mismatch protection.
+- `onConflict replace disposes the previous handle and sets a new bridge` - verifies replace behavior.
+- `throws when window has an invalid global and onConflict is throw` - verifies invalid global handling in throw mode.
+- `onConflict replace removes invalid value from window and creates a real bridge` - verifies invalid global recovery in replace mode.
+- `isValidMfeBridgeHandle rejects plain objects and accepts real handles` - verifies bridge-handle type guard.
+
+### `test/state-sync.spec.ts`
+- `applies replace, patch, remove, reset` - verifies core state operation flow.
+- `patch performs deep object merge for nested fields` - verifies nested merge behavior.
+- `patch follows merge-patch semantics for non-object payloads` - verifies non-object replacement semantics.
+- `reject-if-stale blocks non-monotonic revisions` - verifies stale revision protection.
+- `custom conflict strategy can reject` - verifies extensible conflict strategy handling.
+
+### `test/validation.spec.ts`
+- `accepts valid envelopes` - verifies baseline schema acceptance.
+- `rejects bad uuid` - verifies UUID field enforcement.
+- `rejects bad occurredAtUtc` - verifies timestamp format enforcement.
+- `rejects missing kind` - verifies required kind discriminator.
+- `rejects wrong sensitivity` - verifies allowed sensitivity enum.
+- `rejects negative revision for state messages` - verifies revision bounds.
+- `ValidationDescriptor metadata validates known structure` - verifies accepted metadata structure.
+- `rejects invalid ValidationDescriptor shape` - verifies malformed metadata rejection.
+- `rejects invalid avatarUrl values` - verifies avatar URL format rules.
+
+### `test/adapters.spec.ts`
+- `Angular BusService wires Observable unsubscribe to bus subscription` - verifies Angular RxJS cleanup.
+- `Angular BusService throws readable error when provideBus is missing` - verifies Angular missing-provider diagnostics.
+- `Angular HostBridgeService throws readable error when provideHostBridge is missing` - verifies bridge provider diagnostics.
+- `React useSubscribe cleans up on unmount` - verifies React unmount cleanup.
+- `React HostBridgeProvider does not recreate bridge when remotes values are unchanged` - verifies React bridge stability.
+- `React useSubscribe uses the latest inline handler closure after rerender` - verifies React latest closure behavior.
+- `Vue useSubscribe cleans up on unmount` - verifies Vue lifecycle cleanup.
+- `two subscribers on one bus can model remote targeting` - verifies targeting model across subscribers.
+
 ## License
 
 MIT

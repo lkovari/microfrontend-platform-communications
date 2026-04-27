@@ -1,22 +1,11 @@
-export type MessageKind = 'event' | 'command' | 'query' | 'state' | 'user-context';
-export type Sensitivity = 'public' | 'internal' | 'restricted';
+import type { z } from 'zod';
+import type {
+  MessageBaseSchema,
+  MessageKindSchema,
+  SensitivitySchema,
+} from '../schemas/message-base.schema.js';
 
-export interface ValidationDescriptor {
-  readonly required?: readonly string[];
-  readonly min?: Readonly<Record<string, number>>;
-  readonly max?: Readonly<Record<string, number>>;
-}
-
-export interface MessageBase {
-  readonly messageName: string;
-  readonly messageVersion: number;
-  readonly messageId: string;
-  readonly correlationId: string;
-  readonly causationId?: string;
-  readonly source: string;
-  readonly target?: string;
-  readonly occurredAtUtc: string;
-  readonly kind: MessageKind;
-  readonly sensitivity: Sensitivity;
-  readonly validationDescriptor?: ValidationDescriptor;
-}
+export type MessageKind = z.infer<typeof MessageKindSchema>;
+export type Sensitivity = z.infer<typeof SensitivitySchema>;
+export type MessageBase = z.infer<typeof MessageBaseSchema>;
+export type ValidationDescriptor = NonNullable<MessageBase['validationDescriptor']>;

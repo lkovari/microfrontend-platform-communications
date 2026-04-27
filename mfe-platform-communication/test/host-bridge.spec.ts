@@ -40,7 +40,7 @@ describe('createHostBridge', () => {
     bus.dispose();
   });
 
-  it('tryPublish assigns missing metadata', () => {
+  it('tryPublish rejects empty string ids and reports Nack', () => {
     const bus = createBus({
       appId: 'shell-host',
       dispatch: 'sync',
@@ -52,10 +52,6 @@ describe('createHostBridge', () => {
       appId: 'shell-host',
       bus,
       remotes: ['remote-orders'],
-    });
-    let received = '';
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', (m) => {
-      received = m.messageId;
     });
     const inbound: EventMessage<{ filter: string }> = {
       messageName: 'orders:filters-changed',
@@ -70,8 +66,43 @@ describe('createHostBridge', () => {
       payload: { filter: 'open' },
     };
     const result = bridge.tryPublish(inbound);
-    expect(result.ok).toBe(true);
-    expect(received.length).toBeGreaterThan(10);
+    expect(result.accepted).toBe(false);
+    if (!result.accepted) {
+      expect(result.errorCode).toBe('validation');
+    }
+    bridge.dispose();
+    bus.dispose();
+  });
+
+  it('tryPublish returns accepted ack for valid messages', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    const bridge = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['remote-orders'],
+    });
+    const result = bridge.tryPublish({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(result.accepted).toBe(true);
+    if (result.accepted) {
+      expect(result.accepted).toBe(true);
+    }
     bridge.dispose();
     bus.dispose();
   });
@@ -102,8 +133,8 @@ describe('createHostBridge', () => {
       payload: { filter: 'open' },
     };
     const result = bridge.tryPublish(restricted);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
+    expect(result.accepted).toBe(false);
+    if (!result.accepted) {
       expect(result.errorCode).toBe('unauthorized');
     }
     bridge.dispose();

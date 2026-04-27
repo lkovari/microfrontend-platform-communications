@@ -1,7 +1,5 @@
-import type { MessageBase } from './message-base.js';
+import type { z } from 'zod';
+import type { EventMessageSchema } from '../schemas/event-message.schema.js';
 
-export interface EventMessage<TPayload = unknown> extends MessageBase {
-  readonly kind: 'event';
-  readonly eventKind: string;
-  readonly payload: TPayload;
-}
+type EventMessageBase = z.infer<typeof EventMessageSchema>;
+export type EventMessage<TPayload = unknown> = Omit<EventMessageBase, 'payload'> & { payload: TPayload };

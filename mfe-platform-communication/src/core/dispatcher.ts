@@ -7,8 +7,13 @@ export interface MessageQueue {
 export function createMessageQueue(mode: DispatchMode): MessageQueue {
   const pending: (() => void)[] = [];
   let flushScheduled = false;
+  let flushing = false;
 
   function runFlush(): void {
+    if (flushing) {
+      return;
+    }
+    flushing = true;
     flushScheduled = false;
     while (pending.length > 0) {
       const next = pending.shift();
@@ -16,11 +21,15 @@ export function createMessageQueue(mode: DispatchMode): MessageQueue {
         next();
       }
     }
+    flushing = false;
   }
 
   return {
     enqueue(task: () => void): void {
       pending.push(task);
+      if (flushing) {
+        return;
+      }
       if (flushScheduled) {
         return;
       }

@@ -7,7 +7,7 @@ export type ConflictStrategy = 'last-writer-wins' | 'reject-if-stale' | 'custom'
 
 export interface StateSyncCustomContext<TSnapshot> {
   readonly stateKey: string;
-  readonly incoming: StateMessage<TSnapshot>;
+  readonly incoming: StateMessage;
   readonly currentRevision: number;
   readonly currentSnapshot: TSnapshot | undefined;
 }
@@ -28,6 +28,29 @@ export interface StateSyncCoordinator {
   readonly dispose: () => void;
 }
 
+function isMergeObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  return true;
+}
+
+function mergePatch(target: unknown, patch: unknown): unknown {
+  if (!isMergeObject(patch)) {
+    return patch;
+  }
+  const base = isMergeObject(target) ? target : {};
+  const merged: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null) {
+      delete merged[key];
+      continue;
+    }
+    merged[key] = mergePatch(merged[key], value);
+  }
+  return merged;
+}
+
 export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): StateSyncCoordinator {
   if (!options.enabled) {
     return {
@@ -45,7 +68,7 @@ export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): Stat
     options.initialSnapshots ? Object.entries(options.initialSnapshots) : [],
   );
 
-  function applyReplace<T>(stateKey: string, incoming: StateMessage<T>): void {
+  function applyReplace<T>(stateKey: string, incoming: StateMessage): void {
     const currentRev = revisions.get(stateKey) ?? 0;
     const incomingRev = incoming.revision;
 
@@ -69,10 +92,10 @@ export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): Stat
     snapshots.set(stateKey, incoming.payload);
   }
 
-  function applyPatch<T extends Record<string, unknown>>(stateKey: string, incoming: StateMessage<T>): void {
-    const prev = (snapshots.get(stateKey) as T | undefined) ?? ({} as T);
-    const merged = { ...prev, ...incoming.payload };
-    const synthetic: StateMessage<T> = {
+  function applyPatch(stateKey: string, incoming: StateMessage): void {
+    const current = snapshots.get(stateKey);
+    const merged = mergePatch(current, incoming.payload);
+    const synthetic: StateMessage = {
       ...incoming,
       operation: 'replace',
       payload: merged,
@@ -84,14 +107,14 @@ export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): Stat
     if (message.kind !== 'state') {
       return;
     }
-    const stateMessage = message as StateMessage<unknown>;
+    const stateMessage = message as StateMessage;
     const key = stateMessage.stateKey;
     if (stateMessage.operation === 'replace') {
       applyReplace(key, stateMessage);
       return;
     }
     if (stateMessage.operation === 'patch') {
-      applyPatch(key, stateMessage as StateMessage<Record<string, unknown>>);
+      applyPatch(key, stateMessage);
       return;
     }
     if (stateMessage.operation === 'remove') {

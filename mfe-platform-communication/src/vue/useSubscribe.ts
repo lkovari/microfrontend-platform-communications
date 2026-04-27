@@ -1,4 +1,4 @@
-import { onUnmounted } from 'vue';
+import { onMounted, onUnmounted } from 'vue';
 import type { MessageBase } from '../contracts/message-base.js';
 import type { BusSubscribeOptions } from '../core/bus.js';
 import { useBus } from './useBus.js';
@@ -9,8 +9,11 @@ export function useSubscribe<M extends MessageBase>(
   subscribeOptions?: BusSubscribeOptions,
 ): void {
   const bus = useBus();
-  const off = bus.subscribe<M>(messageName, handler, subscribeOptions);
+  let off: (() => void) | undefined;
+  onMounted(() => {
+    off = bus.subscribe<M>(messageName, handler, subscribeOptions);
+  });
   onUnmounted(() => {
-    off();
+    off?.();
   });
 }
