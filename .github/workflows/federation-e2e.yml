@@ -1,0 +1,41 @@
+name: federation-e2e
+
+on:
+  push:
+    paths:
+      - "mfe-platform-communication/**"
+      - "examples/**"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/federation-e2e.yml"
+  pull_request:
+    paths:
+      - "mfe-platform-communication/**"
+      - "examples/**"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/federation-e2e.yml"
+
+jobs:
+  federation-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build library
+        working-directory: mfe-platform-communication
+        run: pnpm build
+      - name: Build examples
+        working-directory: examples
+        env:
+          NODE_ENV: production
+        run: pnpm build
+      - name: Install Playwright browser
+        working-directory: examples
+        run: pnpm exec playwright install chromium
+      - name: Federation smoke test
+        working-directory: examples
+        run: pnpm test:e2e

@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createBus } from '../src/core/bus.js';
-import { BusValidationError } from '../src/core/errors.js';
+import { BusPolicyError, BusValidationError } from '../src/core/errors.js';
+import { ConsoleObservabilityAdapter } from '../src/core/observability.js';
+import { TopicRegistry } from '../src/core/registry.js';
 import type { CommandMessage } from '../src/contracts/command-message.js';
 import type { EventMessage } from '../src/contracts/event-message.js';
 import type { QueryMessage } from '../src/contracts/query-message.js';
 import type { UserContextMessage } from '../src/contracts/user-context-message.js';
-import { OrdersFiltersEventSchema, PersonStateMessageSchema } from './helpers.js';
+import { expectParsedMessage, OrdersFiltersEventSchema, PersonStateMessageSchema } from './helpers.js';
 import { CommandMessageSchema } from '../src/schemas/command-message.schema.js';
 import { QueryMessageSchema } from '../src/schemas/query-message.schema.js';
 import { StateMessageSchema } from '../src/schemas/state-message.schema.js';
@@ -25,8 +27,8 @@ describe('createBus', () => {
       },
     });
     const received: string[] = [];
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', (m) => {
-      received.push(m.payload.filter);
+    bus.subscribe('orders:filters-changed', (m) => {
+      received.push(expectParsedMessage(m, OrdersFiltersEventSchema).payload.filter);
     });
     bus.publish<EventMessage<{ filter: string }>>({
       messageName: 'orders:filters-changed',
@@ -54,7 +56,7 @@ describe('createBus', () => {
       },
     });
     const order: string[] = [];
-    syncBus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    syncBus.subscribe('orders:filters-changed', () => {
       order.push('handler');
     });
     order.push('before');
@@ -82,7 +84,7 @@ describe('createBus', () => {
       },
     });
     const order2: string[] = [];
-    asyncBus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    asyncBus.subscribe('orders:filters-changed', () => {
       order2.push('handler');
     });
     order2.push('before');
@@ -114,7 +116,7 @@ describe('createBus', () => {
       },
     });
     let count = 0;
-    const off = bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    const off = bus.subscribe('orders:filters-changed', () => {
       count += 1;
     });
     bus.publish<EventMessage<{ filter: string }>>({
@@ -144,7 +146,7 @@ describe('createBus', () => {
       payload: { filter: 'open' },
     });
     expect(count).toBe(1);
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       count += 1;
     });
     bus.dispose();
@@ -172,9 +174,10 @@ describe('createBus', () => {
       },
     });
     const trace: string[] = [];
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', (m) => {
-      trace.push(`a:${m.payload.filter}`);
-      if (m.payload.filter === 'first') {
+    bus.subscribe('orders:filters-changed', (m) => {
+      const event = expectParsedMessage(m, OrdersFiltersEventSchema);
+      trace.push(`a:${event.payload.filter}`);
+      if (event.payload.filter === 'first') {
         bus.publish<EventMessage<{ filter: string }>>({
           messageName: 'orders:filters-changed',
           messageVersion: 1,
@@ -217,9 +220,9 @@ describe('createBus', () => {
     });
     const maxDepth = 3000;
     let observed = 0;
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', (m) => {
+    bus.subscribe('orders:filters-changed', (m) => {
       observed += 1;
-      const next = Number(m.payload.filter);
+      const next = Number(expectParsedMessage(m, OrdersFiltersEventSchema).payload.filter);
       if (next < maxDepth) {
         bus.publish<EventMessage<{ filter: string }>>({
           messageName: 'orders:filters-changed',
@@ -261,7 +264,7 @@ describe('createBus', () => {
       },
     });
     let count = 0;
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       count += 1;
     });
     const id = crypto.randomUUID();
@@ -321,10 +324,10 @@ describe('createBus', () => {
     });
     let hostCount = 0;
     let remoteCount = 0;
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       hostCount += 1;
     });
-    bus.subscribe<EventMessage<{ filter: string }>>(
+    bus.subscribe(
       'orders:filters-changed',
       () => {
         remoteCount += 1;
@@ -360,14 +363,14 @@ describe('createBus', () => {
     });
     let remoteACount = 0;
     let remoteBCount = 0;
-    bus.subscribe<EventMessage<{ filter: string }>>(
+    bus.subscribe(
       'orders:filters-changed',
       () => {
         remoteACount += 1;
       },
       { subscriberId: 'remote-a' },
     );
-    bus.subscribe<EventMessage<{ filter: string }>>(
+    bus.subscribe(
       'orders:filters-changed',
       () => {
         remoteBCount += 1;
@@ -402,10 +405,10 @@ describe('createBus', () => {
     });
     let hostCount = 0;
     let remoteCount = 0;
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       hostCount += 1;
     });
-    bus.subscribe<EventMessage<{ filter: string }>>(
+    bus.subscribe(
       'orders:filters-changed',
       () => {
         remoteCount += 1;
@@ -439,7 +442,7 @@ describe('createBus', () => {
       },
     });
     let commandName = '';
-    bus.subscribe<CommandMessage<{ force: boolean }>>('orders:refresh', (message) => {
+    bus.subscribe('orders:refresh', (message) => {
       commandName = message.messageName;
     });
     bus.publish<CommandMessage<{ force: boolean }>>({
@@ -467,7 +470,7 @@ describe('createBus', () => {
       },
     });
     let queryName = '';
-    bus.subscribe<QueryMessage<{ q: string }>>('orders:query', (message) => {
+    bus.subscribe('orders:query', (message) => {
       queryName = message.messageName;
     });
     bus.publish<QueryMessage<{ q: string }>>({
@@ -497,8 +500,8 @@ describe('createBus', () => {
       },
     });
     let userId = '';
-    bus.subscribe<UserContextMessage>('user:context-updated', (message) => {
-      userId = message.payload.userId;
+    bus.subscribe('user:context-updated', (message) => {
+      userId = expectParsedMessage(message, UserContextMessageSchema).payload.userId;
     });
     bus.publish<UserContextMessage>({
       messageName: 'user:context-updated',
@@ -528,7 +531,7 @@ describe('createBus', () => {
         'q:demo:result': OrdersFiltersEventSchema,
       },
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('q:demo', (m) => {
+    bus.subscribe('q:demo', (m) => {
       bus.publish<EventMessage<{ filter: string }>>({
         messageName: 'q:demo:result',
         messageVersion: 1,
@@ -555,10 +558,7 @@ describe('createBus', () => {
       sensitivity: 'public',
       payload: { filter: 'ask' },
     };
-    const resPromise = bus.request<EventMessage<{ filter: string }>, EventMessage<{ filter: string }>>(
-      req,
-      1000,
-    );
+    const resPromise = bus.request(req, 1000, OrdersFiltersEventSchema);
     await Promise.resolve();
     await Promise.resolve();
     const res = await resPromise;
@@ -575,7 +575,7 @@ describe('createBus', () => {
         'q:demo2:result': OrdersFiltersEventSchema,
       },
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('q:demo2', (m) => {
+    bus.subscribe('q:demo2', (m) => {
       bus.publish<EventMessage<{ filter: string }>>({
         messageName: 'q:demo2:result',
         messageVersion: 1,
@@ -602,7 +602,7 @@ describe('createBus', () => {
       payload: { filter: 'ask' },
     };
     await expect(
-      bus.request<EventMessage<{ filter: string }>, EventMessage<{ filter: string }>>(req, 25),
+      bus.request(req, 25),
     ).rejects.toThrow('request timed out');
     bus.dispose();
   });
@@ -616,7 +616,7 @@ describe('createBus', () => {
         'q:timeout:result': OrdersFiltersEventSchema,
       },
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('q:timeout', () => {
+    bus.subscribe('q:timeout', () => {
       bus.publish<EventMessage<{ filter: string }>>({
         messageName: 'q:timeout:result',
         messageVersion: 1,
@@ -644,7 +644,7 @@ describe('createBus', () => {
       payload: { filter: 'ask' },
     };
     await expect(
-      bus.request<EventMessage<{ filter: string }>, EventMessage<{ filter: string }>>(req, 25),
+      bus.request(req, 25),
     ).rejects.toThrow('request timed out');
     bus.dispose();
   });
@@ -658,7 +658,7 @@ describe('createBus', () => {
         'q:fallback:result': OrdersFiltersEventSchema,
       },
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('q:fallback', (m) => {
+    bus.subscribe('q:fallback', (m) => {
       bus.publish<EventMessage<{ filter: string }>>({
         messageName: 'q:fallback:result',
         messageVersion: 1,
@@ -686,7 +686,7 @@ describe('createBus', () => {
       payload: { filter: 'ask' },
     };
     await expect(
-      bus.request<EventMessage<{ filter: string }>, EventMessage<{ filter: string }>>(req, 25),
+      bus.request(req, 25),
     ).rejects.toThrow('request timed out');
     bus.dispose();
   });
@@ -700,7 +700,7 @@ describe('createBus', () => {
         'q:dup:result': OrdersFiltersEventSchema,
       },
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('q:dup', (m) => {
+    bus.subscribe('q:dup', (m) => {
       bus.publish<EventMessage<{ filter: string }>>({
         messageName: 'q:dup:result',
         messageVersion: 1,
@@ -740,7 +740,7 @@ describe('createBus', () => {
       sensitivity: 'public',
       payload: { filter: 'ask' },
     };
-    const res = await bus.request<EventMessage<{ filter: string }>, EventMessage<{ filter: string }>>(req, 1000);
+    const res = await bus.request(req, 1000, OrdersFiltersEventSchema);
     expect(res.payload.filter).toBe('first');
     bus.dispose();
   });
@@ -785,7 +785,7 @@ describe('createBus', () => {
       },
       onSubscriberError,
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       return Promise.reject(new Error('async subscriber failure'));
     });
     bus.publish<EventMessage<{ filter: string }>>({
@@ -823,7 +823,7 @@ describe('createBus', () => {
       onDispatchError,
       onSubscriberError,
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       return Promise.reject(new Error('x'));
     });
     bus.publish<EventMessage<{ filter: string }>>({
@@ -854,7 +854,7 @@ describe('createBus', () => {
         'orders:filters-changed': OrdersFiltersEventSchema,
       },
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       return Promise.reject(new Error('unhandled sub'));
     });
     bus.publish<EventMessage<{ filter: string }>>({
@@ -874,9 +874,7 @@ describe('createBus', () => {
     expect(errSpy).toHaveBeenCalled();
     const first = errSpy.mock.calls[0];
     expect(first).toBeDefined();
-    if (first) {
-      expect(String(first[0])).toContain('mfe-bus');
-    }
+    expect(String(first?.[0])).toContain('mfe-bus');
     errSpy.mockRestore();
     bus.dispose();
   });
@@ -919,7 +917,7 @@ describe('createBus', () => {
         'q:validated:result': OrdersFiltersEventSchema,
       },
     });
-    bus.subscribe<EventMessage<{ filter: string }>>('q:validated', (m) => {
+    bus.subscribe('q:validated', (m) => {
       bus.publish<EventMessage<{ filter: string }>>({
         messageName: 'q:validated:result',
         messageVersion: 1,
@@ -1000,7 +998,7 @@ describe('createBus', () => {
       messageTtlMs: 5_000,
     });
     let count = 0;
-    bus.subscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+    bus.subscribe('orders:filters-changed', () => {
       count += 1;
     });
     bus.publish<EventMessage<{ filter: string }>>({
@@ -1016,6 +1014,177 @@ describe('createBus', () => {
       payload: { filter: 'open' },
     });
     expect(count).toBe(1);
+    bus.dispose();
+  });
+
+  it('TopicRegistry blocks publish from unauthorized source', () => {
+    const registry = new TopicRegistry();
+    registry.register({
+      messageName: 'orders:filters-changed',
+      allowedPublishers: ['remote-orders'],
+    });
+    const bus = createBus({
+      appId: 'shell',
+      dispatch: 'sync',
+      registry,
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    expect(() =>
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'remote-profile',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'public',
+        payload: { filter: 'open' },
+      }),
+    ).toThrow(BusPolicyError);
+    bus.dispose();
+  });
+
+  it('TopicRegistry blocks subscribe from unauthorized subscriberId', () => {
+    const registry = new TopicRegistry();
+    registry.register({
+      messageName: 'orders:filters-changed',
+      allowedSubscribers: ['remote-orders'],
+    });
+    const bus = createBus({
+      appId: 'shell',
+      dispatch: 'sync',
+      registry,
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    expect(() =>
+      bus.subscribe('orders:filters-changed', () => undefined, { subscriberId: 'remote-profile' }),
+    ).toThrow(BusPolicyError);
+    bus.dispose();
+  });
+
+  it('attemptPublish returns dedupe when messageId repeats within window', () => {
+    const onDedupe = vi.fn();
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      dedupe: { enabled: true, windowMs: 5_000 },
+      onDedupe,
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    const id = crypto.randomUUID();
+    const base = {
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: id,
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event' as const,
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public' as const,
+      payload: { filter: 'open' },
+    };
+    expect(bus.attemptPublish(base)).toEqual({ status: 'delivered' });
+    expect(bus.attemptPublish({ ...base, correlationId: crypto.randomUUID() })).toEqual({
+      status: 'dedupe',
+    });
+    expect(onDedupe).toHaveBeenCalledTimes(1);
+    bus.dispose();
+  });
+
+  it('failFastOnDispatchError rejects request immediately on publish validation failure', async () => {
+    const onDispatchError = vi.fn();
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'microtask',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+      onDispatchError,
+      failFastOnDispatchError: true,
+    });
+    const requestMessage: EventMessage<{ filter: string }> = {
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: 'bad',
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    };
+    await expect(bus.request(requestMessage, 100)).rejects.toBeInstanceOf(BusValidationError);
+    expect(onDispatchError).toHaveBeenCalledTimes(1);
+    bus.dispose();
+  });
+
+  it('observability adapter receives publish and deliver events', () => {
+    const adapter = {
+      onPublish: vi.fn(),
+      onDeliver: vi.fn(),
+      onError: vi.fn(),
+      onRequestTimeout: vi.fn(),
+    };
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      observability: adapter,
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    bus.subscribe('orders:filters-changed', () => undefined);
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(adapter.onPublish).toHaveBeenCalledTimes(1);
+    expect(adapter.onDeliver).toHaveBeenCalledTimes(1);
+    bus.dispose();
+  });
+
+  it('ConsoleObservabilityAdapter can be wired without throwing', () => {
+    const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      observability: new ConsoleObservabilityAdapter(),
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(infoSpy).toHaveBeenCalled();
+    infoSpy.mockRestore();
     bus.dispose();
   });
 });

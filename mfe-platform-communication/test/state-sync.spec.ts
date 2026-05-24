@@ -50,13 +50,8 @@ describe('attachStateSync', () => {
       revision: 2,
       payload: { firstName: 'Augusta' },
     });
-    const snap = coord.getSnapshot<{
-      id: string;
-      firstName: string;
-      lastName: string;
-      email: string;
-    }>('person');
-    expect(snap?.firstName).toBe('Augusta');
+    const snap = coord.getSnapshot('person');
+    expect(snap).toMatchObject({ firstName: 'Augusta' });
     bus.publish({
       messageName: 'person:updated',
       messageVersion: 1,
@@ -132,14 +127,11 @@ describe('attachStateSync', () => {
       revision: 2,
       payload: { user: { age: 31 } },
     });
-    const snapshot = coord.getSnapshot<{
-      user: { firstName: string; lastName: string; age: number };
-      age: number;
-    }>('person');
-    expect(snapshot?.user.firstName).toBe('Ada');
-    expect(snapshot?.user.lastName).toBe('Lovelace');
-    expect(snapshot?.user.age).toBe(31);
-    expect(snapshot?.age).toBe(30);
+    const snapshot = coord.getSnapshot('person');
+    expect(snapshot).toMatchObject({
+      user: { firstName: 'Ada', lastName: 'Lovelace', age: 31 },
+      age: 30,
+    });
     coord.dispose();
     bus.dispose();
   });
@@ -185,7 +177,7 @@ describe('attachStateSync', () => {
       revision: 2,
       payload: 'invalid',
     });
-    const snapshot = coord.getSnapshot<unknown>('person');
+    const snapshot = coord.getSnapshot('person');
     expect(snapshot).toBe('invalid');
     coord.dispose();
     bus.dispose();

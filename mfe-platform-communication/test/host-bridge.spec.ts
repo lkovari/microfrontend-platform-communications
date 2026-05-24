@@ -66,10 +66,7 @@ describe('createHostBridge', () => {
       payload: { filter: 'open' },
     };
     const result = bridge.tryPublish(inbound);
-    expect(result.accepted).toBe(false);
-    if (!result.accepted) {
-      expect(result.errorCode).toBe('validation');
-    }
+    expect(result).toMatchObject({ accepted: false, errorCode: 'validation' });
     bridge.dispose();
     bus.dispose();
   });
@@ -100,10 +97,7 @@ describe('createHostBridge', () => {
       payload: { filter: 'open' },
     };
     const result = bridge.tryPublish(inbound);
-    expect(result.accepted).toBe(true);
-    if (result.accepted) {
-      expect(result.accepted).toBe(true);
-    }
+    expect(result).toMatchObject({ accepted: true });
     bridge.dispose();
     bus.dispose();
   });
@@ -134,10 +128,7 @@ describe('createHostBridge', () => {
       payload: { filter: 'open' },
     };
     const result = bridge.tryPublish(restricted);
-    expect(result.accepted).toBe(false);
-    if (!result.accepted) {
-      expect(result.errorCode).toBe('unauthorized');
-    }
+    expect(result).toMatchObject({ accepted: false, errorCode: 'unauthorized' });
     bridge.dispose();
     bus.dispose();
   });
@@ -389,6 +380,67 @@ describe('createHostBridge', () => {
     const h = createHostBridge({ appId: 'shell-host', bus, remotes: [] });
     expect(isValidMfeBridgeHandle(h)).toBe(true);
     h.dispose();
+    bus.dispose();
+  });
+
+  it('tryPublish returns dedupe Nack for duplicate messageId', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      dedupe: { enabled: true, windowMs: 5_000 },
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    const bridge = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['remote-orders'],
+    });
+    const id = crypto.randomUUID();
+    const base: EventMessage<{ filter: string }> = {
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: id,
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    };
+    expect(bridge.tryPublish(base).accepted).toBe(true);
+    const second = bridge.tryPublish({ ...base, correlationId: crypto.randomUUID() });
+    expect(second).toMatchObject({ accepted: false, errorCode: 'dedupe' });
+    bridge.dispose();
+    bus.dispose();
+  });
+
+  it('getSnapshot returns state when stateSync is enabled', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {
+        'person:updated': StateMessageSchema,
+      },
+    });
+    const bridge = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['remote-profile'],
+      stateSync: {
+        enabled: true,
+        initialRevisions: { person: 0 },
+        initialSnapshots: { person: { id: '1', name: 'Ada' } },
+      },
+    });
+    expect(bridge.getSnapshot).toBeDefined();
+    expect(bridge.getSnapshot?.('person')).toEqual({
+      id: '1',
+      name: 'Ada',
+    });
+    bridge.dispose();
     bus.dispose();
   });
 });

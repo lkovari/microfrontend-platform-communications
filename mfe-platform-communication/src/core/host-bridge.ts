@@ -2,7 +2,11 @@ import type { MessageBase } from '../contracts/message-base.js';
 import type { AckResult } from '../contracts/envelopes.js';
 import type { Bus } from './bus.js';
 import { BusPolicyError, BusValidationError, HostBridgeError } from './errors.js';
-import { attachStateSync, type StateSyncAttachOptions, type StateSyncCoordinator } from './state-sync.js';
+import {
+  attachStateSync,
+  type StateSyncAttachOptions,
+  type StateSyncCoordinator,
+} from './state-sync.js';
 
 export const MFE_BRIDGE_PROTOCOL_VERSION = 1 as const;
 
@@ -12,6 +16,7 @@ export interface MfeBridgeHandle {
   readonly remotes: readonly string[];
   readonly stateSync?: StateSyncAttachOptions;
   readonly getBus: () => Bus;
+  readonly getSnapshot?: (stateKey: string) => unknown;
   tryPublish: (message: MessageBase) => AckResult;
   dispose: () => void;
 }
@@ -70,10 +75,7 @@ function toAckResult(correlationId: string, err: unknown): AckResult {
   };
 }
 
-function remotesEqual(
-  a: readonly string[] | undefined,
-  b: readonly string[] | undefined,
-): boolean {
+function remotesEqual(a: readonly string[] | undefined, b: readonly string[] | undefined): boolean {
   if (a === undefined && b === undefined) {
     return true;
   }
@@ -219,21 +221,45 @@ export function createHostBridge(options: CreateHostBridgeOptions): MfeBridgeHan
     getBus: () => options.bus,
     tryPublish: (message: MessageBase) => {
       const correlationId = message.correlationId ?? crypto.randomUUID();
+      const receivedAtUtc = new Date().toISOString();
       try {
         const normalized = withGeneratedIds({
           ...message,
           correlationId,
         });
-        options.bus.publish(normalized);
+        const outcome = options.bus.attemptPublish(normalized);
+        if (outcome.status === 'dedupe') {
+          return {
+            accepted: false,
+            correlationId: normalized.correlationId,
+            errorCode: 'dedupe',
+            message: 'duplicate messageId',
+            receivedAtUtc,
+          };
+        }
+        if (outcome.status === 'rejected') {
+          return {
+            accepted: false,
+            correlationId: normalized.correlationId,
+            errorCode: 'delivery',
+            message: 'publish rejected',
+            receivedAtUtc,
+          };
+        }
         return {
           accepted: true,
           correlationId: normalized.correlationId,
-          receivedAtUtc: new Date().toISOString(),
+          receivedAtUtc,
         };
       } catch (err) {
         return toAckResult(correlationId, err);
       }
     },
+    ...(stateCoordinator
+      ? {
+          getSnapshot: (stateKey: string) => stateCoordinator.getSnapshot(stateKey),
+        }
+      : {}),
     dispose: () => {
       stateCoordinator?.dispose();
       if (typeof window !== 'undefined' && window.__MFE_BRIDGE__ === handle) {

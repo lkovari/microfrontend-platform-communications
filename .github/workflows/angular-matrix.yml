@@ -30,6 +30,8 @@ jobs:
           cache-dependency-path: mfe-platform-communication/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm add -D @angular/core@${{ matrix.angular-version }} @angular/compiler@${{ matrix.angular-version }}
+      - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm test
+      - run: pnpm test:coverage
       - run: pnpm build

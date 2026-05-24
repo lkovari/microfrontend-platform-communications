@@ -3,9 +3,9 @@ import type { MessageBase } from '../contracts/message-base.js';
 import type { BusSubscribeOptions } from '../core/bus.js';
 import { useBus } from './useBus.js';
 
-export function useSubscribe<M extends MessageBase>(
+export function useSubscribe(
   messageName: string,
-  handler: (message: M) => void | Promise<void>,
+  handler: (message: MessageBase) => void | Promise<void>,
   subscribeOptions?: BusSubscribeOptions,
 ): void {
   const bus = useBus();
@@ -13,7 +13,11 @@ export function useSubscribe<M extends MessageBase>(
   handlerRef.current = handler;
 
   useEffect(() => {
-    const off = bus.subscribe<M>(messageName, (message) => handlerRef.current(message), subscribeOptions);
+    const off = bus.subscribe(
+      messageName,
+      (message) => handlerRef.current(message),
+      subscribeOptions,
+    );
     return () => {
       off();
     };

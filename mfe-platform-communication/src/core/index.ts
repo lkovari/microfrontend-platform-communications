@@ -24,7 +24,14 @@ export type {
   StateSyncCustomContext,
 } from './state-sync.js';
 export { attachStateSync } from './state-sync.js';
-export type { MfeBridgeHandle, CreateHostBridgeOptions } from './host-bridge.js';
+export type {
+  MfeBridgeHandle,
+  CreateHostBridgeOptions,
+  HostBridgeConflictPolicy,
+} from './host-bridge.js';
+export type { ObservabilityAdapter, ObservabilityContext } from './observability.js';
+export { ConsoleObservabilityAdapter } from './observability.js';
+export type { PublishOutcome } from './bus.js';
 export {
   createHostBridge,
   isValidMfeBridgeHandle,

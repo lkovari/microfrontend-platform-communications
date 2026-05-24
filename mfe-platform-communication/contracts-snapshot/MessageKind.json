@@ -1,0 +1,11 @@
+{
+  "type": "string",
+  "enum": [
+    "event",
+    "command",
+    "query",
+    "state",
+    "user-context"
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1,20 +1,29 @@
-import type { ZodTypeAny } from 'zod';
+import type { ZodType, ZodTypeAny } from 'zod';
 import type { MessageBase } from '../contracts/message-base.js';
+import { readBusMessageFromEvent } from './bus-event.js';
 import { createDedupeGate } from './dedupe.js';
 import { createMessageQueue, type DispatchMode } from './dispatcher.js';
 import { BusValidationError } from './errors.js';
+import type { ObservabilityAdapter } from './observability.js';
 import { defaultSensitivityPolicy, composePolicies } from './policy.js';
 import type { TopicRegistry } from './registry.js';
 import { RequestResponseCoordinator } from './request-response.js';
 
 export type Unsubscribe = () => void;
 
+export type PublishOutcome =
+  | { readonly status: 'delivered' }
+  | { readonly status: 'dedupe' }
+  | { readonly status: 'rejected' };
+
 export interface BusPublisher {
   publish<M extends MessageBase>(message: M): void;
+  attemptPublish<M extends MessageBase>(message: M): PublishOutcome;
+  request<TReq extends MessageBase>(message: TReq, timeoutMs?: number): Promise<MessageBase>;
   request<TReq extends MessageBase, TRes extends MessageBase>(
     message: TReq,
-    timeoutMs?: number,
-    responseValidator?: ZodTypeAny,
+    timeoutMs: number | undefined,
+    responseValidator: ZodType<TRes>,
   ): Promise<TRes>;
 }
 
@@ -23,9 +32,9 @@ export interface BusSubscribeOptions {
 }
 
 export interface BusSubscriber {
-  subscribe<M extends MessageBase>(
+  subscribe(
     messageName: string,
-    handler: (message: M) => void | Promise<void>,
+    handler: (message: MessageBase) => void | Promise<void>,
     options?: BusSubscribeOptions,
   ): Unsubscribe;
 }
@@ -50,9 +59,14 @@ export interface CreateBusOptions {
   readonly enableDefaultSensitivityPolicy?: boolean;
   readonly onDispatchError?: (error: unknown) => void;
   readonly onSubscriberError?: (error: unknown) => void;
+  readonly onDedupe?: (message: MessageBase) => void;
+  readonly failFastOnDispatchError?: boolean;
+  readonly observability?: ObservabilityAdapter;
 }
 
 const BUS_EVENT_TYPE = '@lkovari/microfrontend-platform-communication/message';
+
+type PrepareSyncResult = 'deliver' | 'dedupe';
 
 function assertIsoWithinTtl(occurredAtUtc: string, ttlMs: number): void {
   const t = Date.parse(occurredAtUtc);
@@ -69,12 +83,11 @@ export function createBus(options: CreateBusOptions): Bus {
   const target = new EventTarget();
   const queue = createMessageQueue(options.dispatch ?? 'microtask');
   const dedupe =
-    options.dedupe?.enabled === true
-      ? createDedupeGate(options.dedupe.windowMs)
-      : undefined;
+    options.dedupe?.enabled === true ? createDedupeGate(options.dedupe.windowMs) : undefined;
   const rr = new RequestResponseCoordinator();
   const allowUnregistered = options.allowUnregisteredMessageNames === true;
   const ttlMs = options.messageTtlMs;
+  const observability = options.observability;
 
   const defaultPolicyOn = options.enableDefaultSensitivityPolicy ?? true;
 
@@ -89,6 +102,7 @@ export function createBus(options: CreateBusOptions): Bus {
   const beforeDeliverHooks: ((message: MessageBase) => void)[] = [];
 
   function notifySubscriberError(error: unknown): void {
+    observability?.onError(error, 'subscriber');
     if (options.onSubscriberError) {
       options.onSubscriberError(error);
       return;
@@ -104,7 +118,10 @@ export function createBus(options: CreateBusOptions): Bus {
     const schema = options.validators[message.messageName];
     if (!schema) {
       if (!allowUnregistered) {
-        throw new BusValidationError(`no validator registered for ${message.messageName}`, 'validation');
+        throw new BusValidationError(
+          `no validator registered for ${message.messageName}`,
+          'validation',
+        );
       }
       return;
     }
@@ -115,6 +132,7 @@ export function createBus(options: CreateBusOptions): Bus {
   }
 
   function deliver(message: MessageBase): void {
+    observability?.onDeliver(message);
     const event = new CustomEvent<MessageBase>(BUS_EVENT_TYPE, {
       detail: message,
       bubbles: false,
@@ -124,7 +142,7 @@ export function createBus(options: CreateBusOptions): Bus {
     target.dispatchEvent(event);
   }
 
-  function prepareSync(message: MessageBase): boolean {
+  function prepareSync(message: MessageBase): PrepareSyncResult {
     if (ttlMs !== undefined) {
       assertIsoWithinTtl(message.occurredAtUtc, ttlMs);
     }
@@ -134,7 +152,7 @@ export function createBus(options: CreateBusOptions): Bus {
     if (dedupe) {
       const now = Date.now();
       if (dedupe.shouldDrop(message.messageId, now)) {
-        return false;
+        return 'dedupe';
       }
     }
 
@@ -145,72 +163,122 @@ export function createBus(options: CreateBusOptions): Bus {
       hook(message);
     }
 
-    return true;
+    return 'deliver';
+  }
+
+  function handlePublishError(err: unknown, fromRequest: boolean): void {
+    observability?.onError(err, fromRequest ? 'request' : 'dispatch');
+    if (options.onDispatchError) {
+      options.onDispatchError(err);
+      if (options.failFastOnDispatchError === true && fromRequest) {
+        if (err instanceof Error) {
+          throw err;
+        }
+        throw new BusValidationError('unknown publish failure', 'unknown');
+      }
+      return;
+    }
+    if (err instanceof Error) {
+      throw err;
+    }
+    throw new BusValidationError('unknown publish failure', 'unknown');
+  }
+
+  function runPublish<M extends MessageBase>(message: M, fromRequest: boolean): PublishOutcome {
+    observability?.onPublish(message);
+    let prep: PrepareSyncResult;
+    try {
+      prep = prepareSync(message);
+    } catch (err: unknown) {
+      handlePublishError(err, fromRequest);
+      return { status: 'rejected' };
+    }
+
+    if (prep === 'dedupe') {
+      options.onDedupe?.(message);
+      return { status: 'dedupe' };
+    }
+
+    queue.enqueue(() => {
+      deliver(message);
+      rr.tryResolve(message);
+    });
+    return { status: 'delivered' };
   }
 
   const bus: Bus = {
     appId: options.appId,
 
     publish<M extends MessageBase>(message: M): void {
-      try {
-        if (!prepareSync(message)) {
-          return;
-        }
-      } catch (err) {
-        if (options.onDispatchError) {
-          options.onDispatchError(err);
-          return;
-        }
-        if (err instanceof Error) {
-          throw err;
-        }
-        throw new BusValidationError('unknown publish failure', 'unknown');
-      }
+      runPublish(message, false);
+    },
 
-      queue.enqueue(() => {
-        deliver(message);
-        rr.tryResolve(message);
-      });
+    attemptPublish<M extends MessageBase>(message: M): PublishOutcome {
+      return runPublish(message, false);
     },
 
     async request<TReq extends MessageBase, TRes extends MessageBase>(
       message: TReq,
       timeoutMs = 5_000,
-      responseValidator?: ZodTypeAny,
-    ): Promise<TRes> {
-      const wait = rr.waitForResponse(message.messageId, timeoutMs);
-      bus.publish(message);
+      responseValidator?: ZodType<TRes>,
+    ): Promise<MessageBase | TRes> {
+      const wait = rr.waitForResponse(message.messageId, timeoutMs).catch((err: unknown) => {
+        if (err instanceof BusValidationError && err.code === 'timeout') {
+          observability?.onRequestTimeout(message.messageId);
+        }
+        throw err;
+      });
+      try {
+        const outcome = runPublish(message, true);
+        if (outcome.status === 'dedupe') {
+          const dedupeError = new BusValidationError('duplicate messageId', 'dedupe');
+          rr.cancelRequest(message.messageId, dedupeError);
+          throw dedupeError;
+        }
+      } catch (err: unknown) {
+        const error =
+          err instanceof Error ? err : new BusValidationError('request publish failed', 'delivery');
+        rr.cancelRequest(message.messageId, error);
+        void wait.catch(() => undefined);
+        throw error;
+      }
       const result = await wait;
       if (result.causationId !== message.messageId) {
-        throw new BusValidationError('response causationId must equal request messageId', 'validation');
+        throw new BusValidationError(
+          'response causationId must equal request messageId',
+          'validation',
+        );
       }
       if (responseValidator) {
         const parsed = responseValidator.safeParse(result);
         if (!parsed.success) {
           throw new BusValidationError(parsed.error.message, 'validation');
         }
+        return parsed.data;
       }
-      return result as TRes;
+      return result;
     },
 
-    subscribe<M extends MessageBase>(
+    subscribe(
       messageName: string,
-      handler: (message: M) => void | Promise<void>,
+      handler: (message: MessageBase) => void | Promise<void>,
       subscribeOptions?: BusSubscribeOptions,
     ): Unsubscribe {
       const subscriberId = subscribeOptions?.subscriberId ?? defaultSubscriberId;
       options.registry?.assertCanSubscribe(messageName, subscriberId);
 
       const listener: Listener = (event: Event) => {
-        const ce = event as CustomEvent<MessageBase>;
-        const detail = ce.detail;
+        const detail = readBusMessageFromEvent(event);
+        if (detail === null) {
+          return;
+        }
         if (detail.messageName !== messageName) {
           return;
         }
         if (detail.target !== undefined && detail.target !== subscriberId) {
           return;
         }
-        void Promise.resolve(handler(detail as M)).catch((err: unknown) => {
+        void Promise.resolve(handler(detail)).catch((err: unknown) => {
           notifySubscriberError(err);
         });
       };
@@ -229,10 +297,14 @@ export function createBus(options: CreateBusOptions): Bus {
 
     observeAll(handler: (message: MessageBase) => void): Unsubscribe {
       const listener: Listener = (event: Event) => {
-        const ce = event as CustomEvent<MessageBase>;
+        const detail = readBusMessageFromEvent(event);
+        if (detail === null) {
+          return;
+        }
         try {
-          handler(ce.detail);
+          handler(detail);
         } catch (err: unknown) {
+          observability?.onError(err, 'observeAll');
           notifySubscriberError(err);
         }
       };

@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
-import type { ZodTypeAny } from 'zod';
+import type { ZodType } from 'zod';
 import type { MessageBase } from '../contracts/message-base.js';
-import type { Bus, BusSubscribeOptions } from '../core/bus.js';
+import type { Bus, BusSubscribeOptions, Unsubscribe } from '../core/bus.js';
 import { Observable } from 'rxjs';
 import { BUS_TOKEN } from './provide-bus.js';
 
@@ -22,23 +22,29 @@ export class BusService {
     this.requiredBus.publish(message);
   }
 
+  request<TReq extends MessageBase>(message: TReq, timeoutMs?: number): Promise<MessageBase>;
+  request<TReq extends MessageBase, TRes extends MessageBase>(
+    message: TReq,
+    timeoutMs: number | undefined,
+    responseValidator: ZodType<TRes>,
+  ): Promise<TRes>;
   request<TReq extends MessageBase, TRes extends MessageBase>(
     message: TReq,
     timeoutMs?: number,
-    responseValidator?: ZodTypeAny,
-  ): Promise<TRes> {
-    return this.requiredBus.request(message, timeoutMs, responseValidator);
+    responseValidator?: ZodType<TRes>,
+  ): Promise<MessageBase | TRes> {
+    if (responseValidator) {
+      return this.requiredBus.request(message, timeoutMs, responseValidator);
+    }
+    return this.requiredBus.request(message, timeoutMs);
   }
 
-  messages$<M extends MessageBase>(
-    messageName: string,
-    subscribeOptions?: BusSubscribeOptions,
-  ): Observable<M> {
-    return new Observable<M>((subscriber) => {
-      const off = this.requiredBus.subscribe<M>(
+  messages$(messageName: string, subscribeOptions?: BusSubscribeOptions): Observable<MessageBase> {
+    return new Observable<MessageBase>((subscriber) => {
+      const off = this.requiredBus.subscribe(
         messageName,
-        (m) => {
-          subscriber.next(m);
+        (message) => {
+          subscriber.next(message);
         },
         subscribeOptions,
       );
@@ -46,5 +52,24 @@ export class BusService {
         off();
       };
     });
+  }
+
+  observeAll$(): Observable<MessageBase> {
+    return new Observable<MessageBase>((subscriber) => {
+      const off = this.requiredBus.observeAll((message) => {
+        subscriber.next(message);
+      });
+      return () => {
+        off();
+      };
+    });
+  }
+
+  registerBeforeDeliver(handler: (message: MessageBase) => void): Unsubscribe {
+    return this.requiredBus.registerBeforeDeliver(handler);
+  }
+
+  dispose(): void {
+    this.requiredBus.dispose();
   }
 }

@@ -1,21 +1,12 @@
-# @lkovari/microfrontend-platform-communication current status is a PoC.
-
-The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication
-(https://www.npmjs.com/package/@lkovari/microfrontend-platform-communication)
-
-# WARNING!
-In the current version of the library, I basically put in everything that came to my mind — from the simplest stuff to more complex features — and we’ll refine it later.
-
-# TODO list
-
-## Security Privacy
-Security and Privacy: Prioritize the protection of sensitive data by implementing robust security measures to prevent unauthorized access. Adhere to best practices in data sharing to maintain the confidentiality and privacy of user information. Safety and privacy should always be at the forefront of your data communication strategy.
-
 # @lkovari/microfrontend-platform-communication
 
-This library is framework-agnostic solution for messaging between microfrontends (Angular, React, Vue).
-It use host-orchestrated communication model. Runtime bus is based on browser EventTarget and CustomEvent,
-wrapped with typed API. Contracts are simple TypeScript types and validation is done by Zod on bus boundary.
+**Status:** Proof of Concept (`0.x`). Production readiness is tracked in [platform-communication-rfc.md](platform-communication-rfc.md) section **1.5**. Target production release: `1.0.0` when P1–P2 checklist items are complete.
+
+The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication` ([npm](https://www.npmjs.com/package/@lkovari/microfrontend-platform-communication)).
+
+This library is a framework-agnostic solution for messaging between microfrontends (Angular, React, Vue).
+It uses a host-orchestrated communication model. Runtime bus is based on browser EventTarget and CustomEvent,
+wrapped with a typed API. Contracts are TypeScript types; validation is done by Zod on the bus boundary.
 
 ## Topology
 
@@ -84,7 +75,7 @@ Optional peer dependencies:
 - root package: contracts, schemas, core, Angular adapter
 - /contracts: only types
 - /schemas: Zod validation schemas
-- /core: createBus, createHostBridge, policy, registry, state sync
+- /core: createBus, createHostBridge, policy, registry, state sync, observability adapters
 - /angular: Angular providers and service
 - /react: React providers and hooks
 - /vue: Vue plugins and composables
@@ -125,9 +116,22 @@ const bus = bridge.getBus();
 
 Subscribe:
 
+const PersonUpdatedSchema = EventMessageSchema.extend({
+  payload: z.object({
+    id: z.string(),
+    name: z.string(),
+  }),
+});
+
 bus.subscribe(
   'person:updated',
-  (msg) => console.log(msg.payload),
+  (message) => {
+    const parsed = PersonUpdatedSchema.safeParse(message);
+    if (!parsed.success) {
+      return;
+    }
+    console.log(parsed.data.payload.name);
+  },
   { subscriberId: 'remote-profile' },
 );
 
@@ -140,6 +144,10 @@ Host will fill missing metadata like:
 - occurredAtUtc
 
 Also return Ack / Nack result.
+
+For `request()`, prefer passing a response validator as third argument:
+
+`bus.request(requestMessage, 5000, ResponseSchema)`
 
 ## Message kinds (`MessageKind`)
 
@@ -160,26 +168,26 @@ Typical uses: filters changed, navigation completed, feature flags updated, remo
 
 ### `command`
 
-An imperative action the host or another participant should perform. Commands often imply acknowledgement semantics at the bridge layer (see host bridge / policy); the contract includes an optional timeout for waiting on that acknowledgement. (I don't know this will be real usage or not currently)
+An imperative action the host or another participant should perform. Commands often imply acknowledgement semantics at the bridge layer (see host bridge / policy); the contract includes an optional `ackTimeoutMs` field for application-layer ACK handling. **The bus does not read `ackTimeoutMs` in 0.x** — implement timeouts in your handler or orchestration layer.
 
 | Field | Role |
 | --- | --- |
 | `commandName` | Non-empty string naming the command. |
 | `payload` | Arguments for the handler. |
-| `ackTimeoutMs` | Optional positive integer: how long to wait for an ack, in milliseconds. |
+| `ackTimeoutMs` | Optional hint for app-layer ACK wait (not enforced by the bus). |
 
 Typical uses: request navigation, trigger a host-side operation, ask another remote to refresh.
 
 ### `query`
 
-A request for information that expects a result shape. The contract allows naming the query, passing input `payload`, and optionally describing or bounding the response and wait time. (I don't know this will be real usage or not currently)
+A request for information that expects a result shape. The contract allows naming the query, passing input `payload`, and optionally describing or bounding the response and wait time. **The bus does not read `timeoutMs` in 0.x** — use `bus.request()` with an explicit timeout or app-layer SLA logic.
 
 | Field | Role |
 | --- | --- |
 | `queryName` | Non-empty string naming the query. |
 | `payload` | Input to the query. |
 | `expectedResult` | Optional string hint (e.g. result type or schema id) for validators or routing. |
-| `timeoutMs` | Optional positive integer: how long to wait for a result. |
+| `timeoutMs` | Optional hint for app-layer wait (not enforced by the bus). |
 
 Typical uses: read shared UI or host state without mutating it, resolve a capability or configuration snapshot.
 
@@ -254,30 +262,60 @@ Invalidation:
 - cache:invalidated
 - refresh-requested
 
-Health:
-- remote:ready
-- remote:failed
-- telemetry:event
+Health (conventions — not built-in state machine in 0.x):
+
+- `remote:ready` — remote mounted and subscribed; host may enable routes
+- `remote:failed` — remote load or bootstrap failed; host may show fallback UI
+
+## Design summary
+
+- Single package with subpath exports
+- Contracts define message structure; Zod validates at bus boundary
+- `validationDescriptor` validates **shape only** on the bus — field rules (`min`, `max`, etc.) are metadata for tooling, not runtime bus enforcement
+- Core handles policy, dedupe (with `tryPublish` dedupe `Nack`), TTL, correlation
+- Optional `ObservabilityAdapter` + `ConsoleObservabilityAdapter` for structured hooks
+- `attemptPublish` / bridge `tryPublish` return explicit `Nack` including `errorCode: 'dedupe'`
+- `failFastOnDispatchError` avoids silent 5s `request()` timeout when `onDispatchError` swallows publish errors
+- Host controls routing (`target` vs broadcast)
+- `remotes[]` on the bridge is metadata — use `TopicRegistry` for ACL
+- Contract snapshots in `contracts-snapshot/`; CI fails on uncommitted schema drift
+- Restricted messages blocked by default
 
 ## Security model
 
-Important rule:
-Do NOT send sensitive data via bus.
+Important rule: do **not** send sensitive data via the bus.
 
-Allowed:
-- names
-- tenant
-- locale
-- UI roles (only for display)
-- feature flags
+**Allowed on the bus (`public` / `internal`):**
 
-Not allowed:
-- access tokens
-- refresh tokens
-- full claims
-- permission matrix
+- Display names, tenant id, locale, UI-only roles
+- Feature flags, routing state, non-PII coordination payloads
+- Structured `user-context` without tokens
 
-Backend is ALWAYS source of truth.
+**Never on the bus (any sensitivity):**
+
+- Access tokens, refresh tokens, API keys
+- Full auth claims or permission matrices
+- PII (email, phone, government id, full address)
+- Secrets, credentials, session cookies
+
+**`internal` sensitivity policy:** use only for team-trusted coordination (UI routing state, layout, non-sensitive host metadata). Do not use `internal` to bypass restrictions for user PII or auth data.
+
+**Enterprise recommendation:** configure `TopicRegistry` with `allowedPublishers` and `allowedSubscribers` per `messageName`. The bus does not cryptographically bind `source` — registry + deploy-time review is the ACL layer.
+
+```typescript
+const registry = new TopicRegistry();
+registry.register({
+  messageName: 'person:updated',
+  allowedPublishers: ['remote-profile', 'shell-host'],
+  allowedSubscribers: ['remote-orders', 'remote-profile', 'shell-host'],
+  minMessageVersion: 1,
+  maxMessageVersion: 1,
+});
+
+const bus = createBus({ appId: 'shell-host', validators, registry });
+```
+
+Backend is ALWAYS source of truth for authorization.
 
 ## Three types of state
 
@@ -300,45 +338,123 @@ Not enough alone for:
 - complex orchestration
 - weak contract discipline teams
 
-## Design summary
-
-- Single package with subpath exports
-- Contracts define message structure
-- Zod validate messages
-- Core handle policy, dedupe, TTL, correlation
-- Host control routing (target vs broadcast)
-- Restricted messages blocked by default
-
 ## Adapter examples
 
-Angular:
-- provideBus
-- provideHostBridge
-- BusService.messages$('person:updated')
+Angular (host):
+
+- `provideBus` / `provideHostBridge` — `DestroyRef` disposes bus and bridge on teardown
+- `injectBus` / `injectHostBridge`
+- `BusService`: `publish`, `request`, `messages$`, `observeAll$`, `registerBeforeDeliver`, `dispose`
+
+Angular (remote):
+
+- `provideRemotePlatformBus()` — reads `window.__MFE_BRIDGE__` and provides `BUS_TOKEN`
 
 React:
-- BusProvider
-- HostBridgeProvider
-- useSubscribe()
+
+- `BusProvider`, `HostBridgeProvider`, `useSubscribe`, `usePublish`
 
 Vue:
-- createBusPlugin
-- createHostBridgePlugin
-- useSubscribe()
+
+- `createBusPlugin`, `createHostBridgePlugin`, `useSubscribe`
 
 ## Examples workspace
 
-examples/ folder contain demo:
-- shell
-- Angular remote
-- React remote
-- Vue remote
+Runnable Module Federation harness under [`examples/`](examples/):
 
-It show:
-- person:updated
-- orders:filters-changed
+- `host/` — shell with bus + bridge
+- `remote-orders/` — federated remote using `tryPublish` and `getBus()`
+- `federation-e2e/` — Playwright smoke (CI job `federation-e2e`)
 
-Not required for usage.
+```bash
+pnpm install
+pnpm --filter @lkovari/microfrontend-platform-communication build
+cd examples && pnpm dev
+```
+
+Demo messages: `person:updated`, `orders:filters-changed`. See [examples/README.md](examples/README.md).
+
+## NPM Deploy
+
+Publishing targets only the library in [`mfe-platform-communication/`](mfe-platform-communication/) as **`@lkovari/microfrontend-platform-communication`** on the [public npm registry](https://www.npmjs.com/package/@lkovari/microfrontend-platform-communication). The repository root and `examples/` are private and are not published.
+
+### Build
+
+From the package directory:
+
+```bash
+cd mfe-platform-communication
+pnpm install
+pnpm build
+```
+
+`build` runs `rimraf dist` then **tsup** and produces `dist/` (published via `"files"`: `dist`, `README.md`, `LICENSE`).
+
+Optional checks (also run automatically before publish):
+
+```bash
+pnpm lint
+pnpm typecheck
+pnpm test
+pnpm test:coverage
+pnpm format:check
+pnpm export:schemas
+```
+
+From the **repository root**:
+
+```bash
+pnpm install
+pnpm --filter @lkovari/microfrontend-platform-communication build
+```
+
+### Publish
+
+Scripts are defined in [`mfe-platform-communication/package.json`](mfe-platform-communication/package.json):
+
+| Script | Purpose |
+| --- | --- |
+| `build` | Clean and compile `dist/` with tsup |
+| `prepublishOnly` | Runs `lint`, `typecheck`, `test`, and `build` automatically before `publish` |
+| `release` | `pnpm publish --access public` |
+
+`publishConfig.access` is `public` (required for the scoped package name).
+
+**Typical release flow:**
+
+1. Bump `version` in `mfe-platform-communication/package.json` (npm rejects duplicate versions). Update [`CHANGELOG.md`](mfe-platform-communication/CHANGELOG.md) if needed.
+2. Log in to npm once per machine: `npm login` (you need publish access on the `@lkovari` scope).
+3. Publish from the package directory:
+
+```bash
+cd mfe-platform-communication
+pnpm release
+```
+
+Equivalent: `pnpm publish --access public`.
+
+**Dry run** (recommended before a real publish):
+
+```bash
+cd mfe-platform-communication
+pnpm publish --access public --dry-run
+```
+
+`prepublishOnly` still runs unless you pass `--ignore-scripts` (not recommended).
+
+### What is not published
+
+| Location | Role |
+| --- | --- |
+| Repository root `package.json` | Private workspace orchestration only |
+| `examples/` | Private Module Federation demo (local dev / E2E) |
+| `src/` | Not in the npm tarball; consumers receive `dist/` only |
+
+**Consumers install:**
+
+```bash
+pnpm add @lkovari/microfrontend-platform-communication zod
+```
 
 ## Issues 1-19 updates (what changed and why)
 
@@ -361,6 +477,13 @@ Not required for usage.
 17. Root barrel consistency: Angular is not exported from root barrel; purpose is consistent subpath entry strategy.
 18. `validationDescriptor` structure validation: known shape is validated; purpose is stricter runtime metadata validation.
 19. Response validation + Angular matrix CI: optional response validator in request path and Angular compatibility workflow; purpose is runtime safety and multi-version confidence.
+20. TopicRegistry tests + bus integration: ACL and messageVersion window enforced at publish/subscribe; purpose is enterprise policy safety.
+21. Dedupe Nack on `tryPublish`: duplicate `messageId` returns `errorCode: 'dedupe'`; purpose is observable dedupe instead of silent drop.
+22. `failFastOnDispatchError`: `request()` rejects immediately when publish fails under `onDispatchError`; purpose is avoiding 5s silent timeout trap.
+23. ObservabilityAdapter: optional `onPublish` / `onDeliver` / `onError` / `onRequestTimeout` hooks; purpose is SRE-friendly instrumentation.
+24. Angular remote API: `provideRemotePlatformBus`, `injectHostBridge`, extended `BusService`; purpose is production Angular integration.
+25. Bridge `getSnapshot(stateKey)` when state sync enabled; purpose is remote bootstrap without stale UI.
+26. Examples workspace + federation E2E CI: real MF host/remote build and smoke test; purpose is integration regression detection.
 
 ## Test list with purpose
 
@@ -439,4 +562,9 @@ Not required for usage.
 ## License
 
 MIT
+
+## Nx workspace usage prompts
+
+For copy-paste prompts targeting separate Nx host/remote workspaces, see:
+- [`workspace-usage-prompts.md`](workspace-usage-prompts.md)
 

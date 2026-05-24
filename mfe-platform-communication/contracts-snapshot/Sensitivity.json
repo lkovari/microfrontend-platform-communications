@@ -1,0 +1,9 @@
+{
+  "type": "string",
+  "enum": [
+    "public",
+    "internal",
+    "restricted"
+  ],
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1,0 +1,130 @@
+{
+  "type": "object",
+  "properties": {
+    "messageName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "messageVersion": {
+      "type": "integer",
+      "exclusiveMinimum": 0
+    },
+    "messageId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "causationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "occurredAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "kind": {
+      "type": "string",
+      "const": "user-context"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "restricted"
+      ]
+    },
+    "validationDescriptor": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "max": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload": {
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "avatarUrl": {
+          "type": "string",
+          "format": "uri"
+        },
+        "rolesForUi": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tenantId": {
+          "type": "string"
+        },
+        "locale": {
+          "type": "string"
+        },
+        "featureFlags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "sessionVersion": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "rolesForUi"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "messageName",
+    "messageVersion",
+    "messageId",
+    "correlationId",
+    "source",
+    "occurredAtUtc",
+    "kind",
+    "sensitivity",
+    "payload"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

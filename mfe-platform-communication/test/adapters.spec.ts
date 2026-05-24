@@ -1,17 +1,37 @@
 import '@angular/compiler';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Injector } from '@angular/core';
+import { createEnvironmentInjector, Injector, type EnvironmentInjector } from '@angular/core';
+import { Injector as LegacyInjector } from '@angular/core';
 import { createElement } from 'react';
 import { render, cleanup, act } from '@testing-library/react';
 import { createApp, defineComponent, ref } from 'vue';
 import { createBus } from '../src/core/bus.js';
 import type { Bus } from '../src/core/bus.js';
-import { BUS_TOKEN, BusService, HostBridgeService } from '../src/angular/index.js';
-import { BusProvider, HostBridgeProvider, useBus, useSubscribe } from '../src/react/index.js';
-import { createBusPlugin, useBus as useVueBus, useSubscribe as useVueSubscribe } from '../src/vue/index.js';
+import {
+  BUS_TOKEN,
+  BusService,
+  HostBridgeService,
+  provideBus,
+  provideHostBridge,
+  provideRemotePlatformBus,
+} from '../src/angular/index.js';
+import { BusProvider, HostBridgeProvider, useBus, usePublish, useSubscribe } from '../src/react/index.js';
+import {
+  createBusPlugin,
+  createHostBridgePlugin,
+  useBus as useVueBus,
+  useSubscribe as useVueSubscribe,
+} from '../src/vue/index.js';
 import type { EventMessage } from '../src/contracts/event-message.js';
 import type { MessageBase } from '../src/contracts/message-base.js';
+import { createHostBridge } from '../src/core/host-bridge.js';
 import { OrdersFiltersEventSchema } from './helpers.js';
+
+function createTestEnvironmentInjector(
+  providers: Parameters<typeof createEnvironmentInjector>[0],
+): EnvironmentInjector {
+  return createEnvironmentInjector(providers, Injector.NULL as EnvironmentInjector);
+}
 
 describe('framework adapters', () => {
   afterEach(() => {
@@ -38,7 +58,7 @@ describe('framework adapters', () => {
     const busSvc = injector.get(BusService);
     let count = 0;
     const sub = busSvc
-      .messages$<EventMessage<{ filter: string }>>('orders:filters-changed')
+      .messages$('orders:filters-changed')
       .subscribe(() => {
         count += 1;
       });
@@ -92,7 +112,7 @@ describe('framework adapters', () => {
       }),
     ).toThrow('Call provideBus() in your application providers before injecting BusService.');
     expect(() =>
-      busSvc.request<EventMessage<{ filter: string }>, EventMessage<{ filter: string }>>({
+      busSvc.request({
         messageName: 'orders:filters-changed',
         messageVersion: 1,
         messageId: crypto.randomUUID(),
@@ -106,7 +126,7 @@ describe('framework adapters', () => {
       }),
     ).toThrow('Call provideBus() in your application providers before injecting BusService.');
     let didError = false;
-    busSvc.messages$<EventMessage<{ filter: string }>>('orders:filters-changed').subscribe({
+    busSvc.messages$('orders:filters-changed').subscribe({
       error: () => {
         didError = true;
       },
@@ -155,7 +175,7 @@ describe('framework adapters', () => {
 
     function Probe() {
       bus = useBus();
-      useSubscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+      useSubscribe('orders:filters-changed', () => {
         count += 1;
       });
       return null;
@@ -246,7 +266,7 @@ describe('framework adapters', () => {
 
     function Probe(props: { readonly label: string }) {
       bus = useBus();
-      useSubscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+      useSubscribe('orders:filters-changed', () => {
         received.push(props.label);
       });
       return null;
@@ -296,7 +316,7 @@ describe('framework adapters', () => {
     const Root = defineComponent({
       setup() {
         busRef.current = useVueBus();
-        useVueSubscribe<EventMessage<{ filter: string }>>('orders:filters-changed', () => {
+        useVueSubscribe('orders:filters-changed', () => {
           count.value += 1;
         });
         return {};
@@ -364,14 +384,14 @@ describe('framework adapters', () => {
     });
     let a = 0;
     let b = 0;
-    bus.subscribe<EventMessage<{ filter: string }>>(
+    bus.subscribe(
       'orders:filters-changed',
       () => {
         a += 1;
       },
       { subscriberId: 'remote-a' },
     );
-    bus.subscribe<EventMessage<{ filter: string }>>(
+    bus.subscribe(
       'orders:filters-changed',
       () => {
         b += 1;
@@ -394,5 +414,249 @@ describe('framework adapters', () => {
     expect(a).toBe(0);
     expect(b).toBe(1);
     bus.dispose();
+  });
+
+  it('Angular provideBus and provideHostBridge wire host services', () => {
+    const injector = createTestEnvironmentInjector([
+      provideBus({
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: {
+          'orders:filters-changed': OrdersFiltersEventSchema,
+        },
+      }),
+      provideHostBridge({ remotes: ['remote-orders'] }),
+      BusService,
+      HostBridgeService,
+    ]);
+    const busSvc = injector.get(BusService);
+    const bridgeSvc = injector.get(HostBridgeService);
+    expect(window.__MFE_BRIDGE__).toBeDefined();
+    expect(bridgeSvc.getBus()).toBe(injector.get(BUS_TOKEN));
+    let count = 0;
+    busSvc.messages$('orders:filters-changed').subscribe(() => {
+      count += 1;
+    });
+    busSvc.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'shell',
+      occurredAtUtc: new Date().toISOString(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(count).toBe(1);
+    injector.destroy();
+  });
+
+  it('Angular BusService.request resolves with matching response', async () => {
+    const injector = createTestEnvironmentInjector([
+      provideBus({
+        appId: 'shell',
+        dispatch: 'microtask',
+        validators: {
+          'orders:filters-changed': OrdersFiltersEventSchema,
+        },
+      }),
+      BusService,
+    ]);
+    const busSvc = injector.get(BusService);
+    const requestId = crypto.randomUUID();
+    const responsePromise = busSvc.request(
+      {
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: requestId,
+        correlationId: crypto.randomUUID(),
+        source: 'shell',
+        occurredAtUtc: new Date().toISOString(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'public',
+        payload: { filter: 'pending' },
+      },
+      500,
+      OrdersFiltersEventSchema,
+    );
+    busSvc.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      causationId: requestId,
+      source: 'shell',
+      occurredAtUtc: new Date().toISOString(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'done' },
+    });
+    await Promise.resolve();
+    const response = await responsePromise;
+    expect(response.payload.filter).toBe('done');
+    injector.destroy();
+  });
+
+  it('Angular provideBus disposes bus when injector is destroyed', () => {
+    const injector = createTestEnvironmentInjector([
+      provideBus({
+          appId: 'shell',
+          dispatch: 'sync',
+          validators: {
+            'orders:filters-changed': OrdersFiltersEventSchema,
+          },
+        }),
+    ]);
+    const bus = injector.get(BUS_TOKEN);
+    let count = 0;
+    bus.subscribe('orders:filters-changed', () => {
+      count += 1;
+    });
+    injector.destroy();
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'shell',
+      occurredAtUtc: new Date().toISOString(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(count).toBe(0);
+  });
+
+  it('Angular provideRemotePlatformBus reads bus from window bridge', () => {
+    const hostBus = createBus({
+      appId: 'shell',
+      dispatch: 'sync',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    const bridge = createHostBridge({
+      appId: 'shell',
+      bus: hostBus,
+      remotes: ['remote-orders'],
+    });
+    const injector = createTestEnvironmentInjector([provideRemotePlatformBus()]);
+    expect(injector.get(BUS_TOKEN)).toBe(hostBus);
+    injector.destroy();
+    bridge.dispose();
+    hostBus.dispose();
+  });
+
+  it('Angular BusService observeAll$ forwards all messages', () => {
+    const injector = LegacyInjector.create({
+      providers: [
+        {
+          provide: BUS_TOKEN,
+          useFactory: () =>
+            createBus({
+              appId: 'shell',
+              dispatch: 'sync',
+              validators: {
+                'orders:filters-changed': OrdersFiltersEventSchema,
+              },
+            }),
+        },
+        BusService,
+      ],
+    });
+    const busSvc = injector.get(BusService);
+    const names: string[] = [];
+    const sub = busSvc.observeAll$().subscribe((m) => {
+      names.push(m.messageName);
+    });
+    busSvc.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'shell',
+      occurredAtUtc: new Date().toISOString(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(names).toEqual(['orders:filters-changed']);
+    sub.unsubscribe();
+    injector.get(BUS_TOKEN).dispose();
+  });
+
+  it('React usePublish publishes through bus context', () => {
+    let count = 0;
+    const publishRef: {
+      current: (<M extends MessageBase>(message: M) => void) | null;
+    } = { current: null };
+
+    function Probe() {
+      publishRef.current = usePublish();
+      useSubscribe('orders:filters-changed', () => {
+        count += 1;
+      });
+      return null;
+    }
+
+    const ui = render(
+      createElement(BusProvider, {
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: { 'orders:filters-changed': OrdersFiltersEventSchema },
+        children: createElement(Probe),
+      }),
+    );
+
+    act(() => {
+      if (publishRef.current === null) {
+        throw new Error('expected publish');
+      }
+      publishRef.current<EventMessage<{ filter: string }>>({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'x',
+        occurredAtUtc: new Date().toISOString(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'public',
+        payload: { filter: 'open' },
+      });
+    });
+    expect(count).toBe(1);
+    ui.unmount();
+  });
+
+  it('Vue createHostBridgePlugin exposes bridge on window', () => {
+    const Root = defineComponent({
+      setup() {
+        useVueSubscribe('orders:filters-changed', () => undefined);
+        return {};
+      },
+      template: '<span />',
+    });
+    const el = document.createElement('motion');
+    const app = createApp(Root);
+    app.use(
+      createBusPlugin({
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: {
+          'orders:filters-changed': OrdersFiltersEventSchema,
+        },
+      }),
+    );
+    app.use(createHostBridgePlugin({ remotes: ['remote-orders'] }));
+    app.mount(el);
+    expect(window.__MFE_BRIDGE__?.remotes).toEqual(['remote-orders']);
+    app.unmount();
   });
 });

@@ -1,0 +1,98 @@
+{
+  "type": "object",
+  "properties": {
+    "messageName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "messageVersion": {
+      "type": "integer",
+      "exclusiveMinimum": 0
+    },
+    "messageId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "correlationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "causationId": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "source": {
+      "type": "string",
+      "minLength": 1
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1
+    },
+    "occurredAtUtc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "kind": {
+      "type": "string",
+      "const": "query"
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": [
+        "public",
+        "internal",
+        "restricted"
+      ]
+    },
+    "validationDescriptor": {
+      "type": "object",
+      "properties": {
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "min": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        },
+        "max": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "queryName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "payload": {},
+    "expectedResult": {
+      "type": "string"
+    },
+    "timeoutMs": {
+      "type": "integer",
+      "exclusiveMinimum": 0
+    }
+  },
+  "required": [
+    "messageName",
+    "messageVersion",
+    "messageId",
+    "correlationId",
+    "source",
+    "occurredAtUtc",
+    "kind",
+    "sensitivity",
+    "queryName"
+  ],
+  "additionalProperties": false,
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

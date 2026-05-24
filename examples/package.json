@@ -1,0 +1,28 @@
+{
+  "name": "@mfe-platform-communication/examples",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run build:remote && pnpm run build:host",
+    "build:host": "webpack --config host/webpack.config.cjs",
+    "build:remote": "webpack --config remote-orders/webpack.config.cjs",
+    "dev": "concurrently -k \"pnpm run dev:remote\" \"pnpm run dev:host\"",
+    "dev:host": "webpack serve --config host/webpack.config.cjs",
+    "dev:remote": "webpack serve --config remote-orders/webpack.config.cjs",
+    "test:e2e": "node federation-e2e/smoke.mjs"
+  },
+  "dependencies": {
+    "@lkovari/microfrontend-platform-communication": "workspace:*",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "playwright": "^1.48.0",
+    "concurrently": "^9.0.0",
+    "html-webpack-plugin": "^5.6.0",
+    "ts-loader": "^9.5.1",
+    "typescript": "^5.4.0",
+    "webpack": "^5.94.0",
+    "webpack-cli": "^5.1.4",
+    "webpack-dev-server": "^5.0.4"
+  }
+}

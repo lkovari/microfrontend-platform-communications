@@ -24,6 +24,16 @@ export class RequestResponseCoordinator {
     });
   }
 
+  cancelRequest(causationId: string, error: Error): void {
+    const pending = this.pendingByCausationId.get(causationId);
+    if (!pending) {
+      return;
+    }
+    clearTimeout(pending.timer);
+    this.pendingByCausationId.delete(causationId);
+    pending.reject(error);
+  }
+
   tryResolve(incoming: MessageBase): boolean {
     if (!incoming.causationId) {
       return false;

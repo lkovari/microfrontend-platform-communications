@@ -7,9 +7,7 @@ export const HostBridgeKey: InjectionKey<MfeBridgeHandle> = Symbol(
   '@lkovari/microfrontend-platform-communication/host-bridge',
 );
 
-export function createHostBridgePlugin(
-  options: Omit<CreateHostBridgeOptions, 'bus' | 'appId'>,
-) {
+export function createHostBridgePlugin(options: Omit<CreateHostBridgeOptions, 'bus' | 'appId'>) {
   return {
     install(app: App) {
       const bus = getBusForApp(app);

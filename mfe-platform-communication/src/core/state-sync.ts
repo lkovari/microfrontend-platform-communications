@@ -1,15 +1,16 @@
 import type { StateMessage } from '../contracts/state-message.js';
 import type { MessageBase } from '../contracts/message-base.js';
+import { StateMessageSchema } from '../schemas/state-message.schema.js';
 import type { Bus } from './bus.js';
 import { BusValidationError } from './errors.js';
 
 export type ConflictStrategy = 'last-writer-wins' | 'reject-if-stale' | 'custom';
 
-export interface StateSyncCustomContext<TSnapshot> {
+export interface StateSyncCustomContext {
   readonly stateKey: string;
   readonly incoming: StateMessage;
   readonly currentRevision: number;
-  readonly currentSnapshot: TSnapshot | undefined;
+  readonly currentSnapshot: unknown;
 }
 
 export interface StateSyncAttachOptions {
@@ -17,14 +18,12 @@ export interface StateSyncAttachOptions {
   readonly initialRevisions?: Readonly<Record<string, number>>;
   readonly initialSnapshots?: Readonly<Record<string, unknown>>;
   readonly conflictStrategy?: ConflictStrategy;
-  readonly customConflict?: <TSnapshot>(
-    ctx: StateSyncCustomContext<TSnapshot>,
-  ) => 'accept' | 'reject';
+  readonly customConflict?: (ctx: StateSyncCustomContext) => 'accept' | 'reject';
 }
 
 export interface StateSyncCoordinator {
   readonly getRevision: (stateKey: string) => number | undefined;
-  readonly getSnapshot: <T>(stateKey: string) => T | undefined;
+  readonly getSnapshot: (stateKey: string) => unknown;
   readonly dispose: () => void;
 }
 
@@ -51,6 +50,14 @@ function mergePatch(target: unknown, patch: unknown): unknown {
   return merged;
 }
 
+function parseStateMessage(message: MessageBase): StateMessage | null {
+  const parsed = StateMessageSchema.safeParse(message);
+  if (!parsed.success) {
+    return null;
+  }
+  return parsed.data;
+}
+
 export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): StateSyncCoordinator {
   if (!options.enabled) {
     return {
@@ -68,7 +75,7 @@ export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): Stat
     options.initialSnapshots ? Object.entries(options.initialSnapshots) : [],
   );
 
-  function applyReplace<T>(stateKey: string, incoming: StateMessage): void {
+  function applyReplace(stateKey: string, incoming: StateMessage): void {
     const currentRev = revisions.get(stateKey) ?? 0;
     const incomingRev = incoming.revision;
 
@@ -77,11 +84,11 @@ export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): Stat
     }
 
     if (strategy === 'custom' && options.customConflict) {
-      const decision = options.customConflict<T>({
+      const decision = options.customConflict({
         stateKey,
         incoming,
         currentRevision: currentRev,
-        currentSnapshot: snapshots.get(stateKey) as T | undefined,
+        currentSnapshot: snapshots.get(stateKey),
       });
       if (decision === 'reject') {
         throw new BusValidationError('state conflict rejected', 'delivery');
@@ -107,7 +114,10 @@ export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): Stat
     if (message.kind !== 'state') {
       return;
     }
-    const stateMessage = message as StateMessage;
+    const stateMessage = parseStateMessage(message);
+    if (stateMessage === null) {
+      return;
+    }
     const key = stateMessage.stateKey;
     if (stateMessage.operation === 'replace') {
       applyReplace(key, stateMessage);
@@ -130,7 +140,7 @@ export function attachStateSync(bus: Bus, options: StateSyncAttachOptions): Stat
 
   return {
     getRevision: (stateKey: string) => revisions.get(stateKey),
-    getSnapshot: <T>(stateKey: string) => snapshots.get(stateKey) as T | undefined,
+    getSnapshot: (stateKey: string) => snapshots.get(stateKey),
     dispose: () => {
       off();
     },

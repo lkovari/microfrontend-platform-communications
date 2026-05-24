@@ -1,4 +1,9 @@
-export type { MessageKind, Sensitivity, ValidationDescriptor, MessageBase } from './message-base.js';
+export type {
+  MessageKind,
+  Sensitivity,
+  ValidationDescriptor,
+  MessageBase,
+} from './message-base.js';
 export type { EventMessage } from './event-message.js';
 export type { StateOperation, StateMessage } from './state-message.js';
 export type { CommandMessage } from './command-message.js';
