@@ -419,6 +419,8 @@ Scripts are defined in [`package.json`](package.json):
 
 `publishConfig.access` is `public` (required for the scoped package name).
 
+> **Warning:** Before you release, log in to npm via `npm login`.
+
 **Typical release flow:**
 
 1. Bump `version` in `package.json` (npm rejects duplicate versions). Update [`CHANGELOG.md`](CHANGELOG.md) if needed.

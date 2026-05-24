@@ -420,6 +420,8 @@ Scripts are defined in [`mfe-platform-communication/package.json`](mfe-platform-
 
 `publishConfig.access` is `public` (required for the scoped package name).
 
+> **Warning:** Before you release, log in to npm via `npm login`.
+
 **Typical release flow:**
 
 1. Bump `version` in `mfe-platform-communication/package.json` (npm rejects duplicate versions). Update [`CHANGELOG.md`](mfe-platform-communication/CHANGELOG.md) if needed.
