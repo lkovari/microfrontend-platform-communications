@@ -2,9 +2,10 @@
 dist/
 /out-tsc/
 /tmp/
-/coverage/
+coverage/
 /e2e/test-output/
-.cursor/
+examples/dist/
+examples/node_modules/
 
 # Node modules and dependency files
 node_modules/
