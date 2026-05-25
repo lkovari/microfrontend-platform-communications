@@ -60,6 +60,503 @@ Important:
 - Remote-to-remote communication also go via Host
 - Separate createBus() instances cannot see each other events
 
+## Architecture
+
+### Package Layer Overview
+
+```mermaid
+graph TB
+    subgraph External["External — WHATWG DOM Standard"]
+        ET["EventTarget"]
+        CE["CustomEvent&lt;MessageBase&gt;"]
+        EV["Event"]
+        QM["queueMicrotask()"]
+        CR["crypto.randomUUID()"]
+    end
+
+    subgraph Contracts["Contracts & Schemas"]
+        MB["MessageBase"]
+        EM["EventMessage"]
+        CM["CommandMessage"]
+        QMsg["QueryMessage"]
+        SM["StateMessage"]
+        UCM["UserContextMessage"]
+        ENV["Ack / Nack / AckResult"]
+        ZS["Zod Schemas"]
+
+        MB --- EM
+        MB --- CM
+        MB --- QMsg
+        MB --- SM
+        MB --- UCM
+        ZS -.->|validates| MB
+    end
+
+    subgraph Core["Core Engine"]
+        Bus["createBus()"]
+        HB["createHostBridge()"]
+        Disp["MessageQueue<br/>sync | microtask"]
+        Ded["DedupeGate"]
+        Pol["Policy<br/>defaultSensitivityPolicy<br/>composePolicies"]
+        Reg["TopicRegistry<br/>allowedPublishers<br/>allowedSubscribers"]
+        RR["RequestResponseCoordinator"]
+        SS["StateSyncCoordinator<br/>replace | patch | remove | reset"]
+        Obs["ObservabilityAdapter"]
+        BEV["readBusMessageFromEvent()"]
+
+        Bus --> Disp
+        Bus --> Ded
+        Bus --> Pol
+        Bus --> Reg
+        Bus --> RR
+        Bus --> BEV
+        HB --> Bus
+        HB --> SS
+    end
+
+    subgraph Adapters["Framework Adapters"]
+        subgraph NG["Angular"]
+            NGP["provideBus()<br/>provideHostBridge()"]
+            NGS["BusService<br/>HostBridgeService"]
+            NGR["provideRemotePlatformBus()"]
+        end
+        subgraph RC["React"]
+            RCP["BusProvider<br/>HostBridgeProvider"]
+            RCH["useBus()<br/>useSubscribe()<br/>usePublish()"]
+        end
+        subgraph VU["Vue"]
+            VUP["createBusPlugin()<br/>createHostBridgePlugin()"]
+            VUH["useBus()<br/>useSubscribe()"]
+        end
+    end
+
+    NGP --> Bus
+    NGP --> HB
+    NGS --> Bus
+    NGR -->|"window.__MFE_BRIDGE__.getBus()"| HB
+    RCP --> Bus
+    RCP --> HB
+    RCH --> Bus
+    VUP --> Bus
+    VUP --> HB
+    VUH --> Bus
+
+    Bus --> ET
+    Bus --> CE
+    Bus --> EV
+    Disp --> QM
+    HB --> CR
+    BEV --> CE
+    Obs -.->|hooks| Bus
+
+    ZS -->|"safeParse on publish"| Bus
+    MB -->|"typed envelope"| Bus
+    ENV -->|"tryPublish result"| HB
+
+    style External fill:#fce4ec,stroke:#c62828,color:#000
+    style Contracts fill:#e3f2fd,stroke:#1565c0,color:#000
+    style Core fill:#e8f5e9,stroke:#2e7d32,color:#000
+    style Adapters fill:#fff3e0,stroke:#e65100,color:#000
+    style NG fill:#fff3e0,stroke:#dd2c00,color:#000
+    style RC fill:#fff3e0,stroke:#0277bd,color:#000
+    style VU fill:#fff3e0,stroke:#2e7d32,color:#000
+```
+
+### Publish Pipeline — Message Flow
+
+```mermaid
+flowchart TD
+    A["publish(message)<br/>or attemptPublish(message)"] --> OBS1["ObservabilityAdapter.onPublish()"]
+    OBS1 --> B{"messageTtlMs set?"}
+    B -->|yes| B2{"TTL check:<br/>Date.now() - occurredAtUtc > ttlMs?"}
+    B2 -->|expired| ERR1["BusValidationError<br/>code: timeout"]
+    B2 -->|valid| C
+    B -->|no| C
+
+    C["Zod schema validation<br/>validators[messageName].safeParse()"]
+    C -->|invalid| ERR2["BusValidationError<br/>code: validation"]
+    C -->|no validator & !allowUnregistered| ERR2
+    C -->|valid| D
+
+    D{"DedupeGate<br/>enabled?"}
+    D -->|yes| D2{"shouldDrop(messageId)?"}
+    D2 -->|duplicate| DED["PublishOutcome: dedupe<br/>onDedupe() callback"]
+    D2 -->|new| E
+    D -->|no| E
+
+    E["Policy chain<br/>composePolicies(defaultSensitivity, custom)"]
+    E -->|"sensitivity = restricted"| ERR3["BusPolicyError<br/>code: unauthorized"]
+    E -->|allowed| F
+
+    F{"TopicRegistry<br/>configured?"}
+    F -->|yes| F2{"assertCanPublish()<br/>allowedPublishers?<br/>messageVersion in range?"}
+    F2 -->|unauthorized| ERR3
+    F2 -->|incompatible version| ERR4["BusPolicyError<br/>code: incompatible-version"]
+    F2 -->|ok| G
+    F -->|no| G
+
+    G["beforeDeliver hooks"]
+    G --> H["MessageQueue.enqueue()"]
+
+    H -->|"dispatch: sync"| I["runFlush() immediately"]
+    H -->|"dispatch: microtask"| J["queueMicrotask(runFlush)"]
+
+    I --> K["deliver()"]
+    J --> K
+
+    K --> OBS2["ObservabilityAdapter.onDeliver()"]
+    OBS2 --> L["new CustomEvent&lt;MessageBase&gt;(type, {detail})<br/>EventTarget.dispatchEvent(event)"]
+    L --> M["RequestResponseCoordinator.tryResolve()"]
+    L --> N["Subscribers receive via addEventListener"]
+
+    style A fill:#e8eaf6,stroke:#283593,color:#000
+    style DED fill:#fff9c4,stroke:#f9a825,color:#000
+    style ERR1 fill:#ffcdd2,stroke:#c62828,color:#000
+    style ERR2 fill:#ffcdd2,stroke:#c62828,color:#000
+    style ERR3 fill:#ffcdd2,stroke:#c62828,color:#000
+    style ERR4 fill:#ffcdd2,stroke:#c62828,color:#000
+    style L fill:#c8e6c9,stroke:#2e7d32,color:#000
+    style N fill:#c8e6c9,stroke:#2e7d32,color:#000
+```
+
+### Subscribe & Delivery Flow
+
+```mermaid
+flowchart LR
+    subgraph Subscriber["bus.subscribe(messageName, handler)"]
+        S1["TopicRegistry.assertCanSubscribe()<br/>checks allowedSubscribers"]
+        S2["EventTarget.addEventListener()<br/>type: @lkovari/.../message"]
+    end
+
+    subgraph Delivery["On CustomEvent dispatch"]
+        D1["readBusMessageFromEvent(event)"]
+        D2{"event instanceof CustomEvent?"}
+        D3["MessageBaseSchema.safeParse(event.detail)"]
+        D4{"detail.messageName<br/>matches subscription?"}
+        D5{"detail.target set?"}
+        D6{"target === subscriberId?"}
+        D7["handler(detail)"]
+    end
+
+    S1 --> S2
+    S2 -->|event fires| D1
+    D1 --> D2
+    D2 -->|no| DROP1["ignored"]
+    D2 -->|yes| D3
+    D3 -->|invalid| DROP2["return null"]
+    D3 -->|valid| D4
+    D4 -->|no| DROP3["skip"]
+    D4 -->|yes| D5
+    D5 -->|no target| D7
+    D5 -->|has target| D6
+    D6 -->|no match| DROP4["skip"]
+    D6 -->|match| D7
+
+    style Subscriber fill:#e3f2fd,stroke:#1565c0,color:#000
+    style Delivery fill:#e8f5e9,stroke:#2e7d32,color:#000
+    style D7 fill:#c8e6c9,stroke:#2e7d32,color:#000
+```
+
+### Framework Adapter Pattern
+
+```mermaid
+flowchart TB
+    subgraph CoreAPI["Core API — Framework-Agnostic"]
+        CB["createBus(options): Bus"]
+        CHB["createHostBridge(options): MfeBridgeHandle"]
+        BI["Bus interface<br/>publish() | subscribe() | request()<br/>attemptPublish() | observeAll()<br/>registerBeforeDeliver() | dispose()"]
+        CB --> BI
+    end
+
+    subgraph AngularAdapter["Angular Adapter"]
+        direction TB
+        AP["provideBus(options)<br/>→ InjectionToken&lt;Bus&gt; via BUS_TOKEN<br/>→ DestroyRef auto-dispose"]
+        AHP["provideHostBridge(options)<br/>→ InjectionToken&lt;MfeBridgeHandle&gt;<br/>→ injects BUS_TOKEN, DestroyRef auto-dispose"]
+        ARP["provideRemotePlatformBus()<br/>→ reads window.__MFE_BRIDGE__<br/>→ provides BUS_TOKEN for remotes"]
+        ABS["BusService<br/>publish() | request() | messages$()<br/>observeAll$() | registerBeforeDeliver()"]
+        AHBS["HostBridgeService<br/>tryPublish() | getBus()"]
+        AP --> ABS
+        AHP --> AHBS
+    end
+
+    subgraph ReactAdapter["React Adapter"]
+        direction TB
+        RP["BusProvider<br/>→ React.Context&lt;Bus&gt;<br/>→ useRef for stable instance"]
+        RHP["HostBridgeProvider<br/>→ useEffect lifecycle<br/>→ auto-dispose on unmount"]
+        RUB["useBus() → useContext(BusContext)"]
+        RUS["useSubscribe(name, handler)<br/>→ useEffect + useRef for latest handler"]
+        RUP["usePublish() → useCallback wrapping bus.publish"]
+        RP --> RUB
+        RUB --> RUS
+        RUB --> RUP
+    end
+
+    subgraph VueAdapter["Vue Adapter"]
+        direction TB
+        VP["createBusPlugin(options)<br/>→ app.provide(BusKey, bus)"]
+        VHP["createHostBridgePlugin(options)<br/>→ getBusForApp() + createHostBridge<br/>→ app.provide(HostBridgeKey, bridge)"]
+        VUB["useBus() → inject(BusKey)"]
+        VUS["useSubscribe(name, handler)<br/>→ onMounted / onUnmounted lifecycle"]
+        VP --> VUB
+        VUB --> VUS
+    end
+
+    AP --> CB
+    AHP --> CHB
+    ARP -->|"window.__MFE_BRIDGE__.getBus()"| BI
+    RP --> CB
+    RHP --> CHB
+    VP --> CB
+    VHP --> CHB
+
+    style CoreAPI fill:#e8f5e9,stroke:#2e7d32,color:#000
+    style AngularAdapter fill:#fce4ec,stroke:#dd2c00,color:#000
+    style ReactAdapter fill:#e3f2fd,stroke:#0277bd,color:#000
+    style VueAdapter fill:#e8f5e9,stroke:#388e3c,color:#000
+```
+
+### Host–Remote Bridge Communication
+
+```mermaid
+flowchart TB
+    subgraph HostApp["Host Application (Shell)"]
+        H1["createBus(options)"] --> H2["Bus instance"]
+        H2 --> H3["createHostBridge({bus, remotes, stateSync})"]
+        H3 --> H4["MfeBridgeHandle"]
+        H4 --> H5["window.__MFE_BRIDGE__ = handle"]
+        H3 --> H6["StateSyncCoordinator<br/>getSnapshot(stateKey)<br/>getRevision(stateKey)"]
+    end
+
+    subgraph Bridge["window.__MFE_BRIDGE__"]
+        BG1["protocolVersion: 1"]
+        BG2["appId"]
+        BG3["remotes[]"]
+        BG4["getBus(): Bus"]
+        BG5["tryPublish(msg): Ack | Nack"]
+        BG6["getSnapshot(stateKey)"]
+        BG7["dispose()"]
+    end
+
+    subgraph RemoteA["Remote A (e.g. Angular)"]
+        RA1["provideRemotePlatformBus()<br/>or window.__MFE_BRIDGE__"]
+        RA2["bridge.getBus()"]
+        RA3["bus.subscribe('person:updated', handler)"]
+        RA4["bridge.tryPublish(message)"]
+    end
+
+    subgraph RemoteB["Remote B (e.g. React)"]
+        RB1["window.__MFE_BRIDGE__"]
+        RB2["bridge.getBus()"]
+        RB3["bus.subscribe('orders:filters-changed', handler)"]
+        RB4["bridge.tryPublish(message)"]
+    end
+
+    subgraph TryPublishFlow["tryPublish internals"]
+        TP1["withGeneratedIds()<br/>fills messageId, correlationId, occurredAtUtc"]
+        TP2["bus.attemptPublish(normalized)"]
+        TP3{"outcome?"}
+        TP4["Ack {accepted: true, correlationId, receivedAtUtc}"]
+        TP5["Nack {accepted: false, errorCode, message}"]
+        TP1 --> TP2 --> TP3
+        TP3 -->|delivered| TP4
+        TP3 -->|dedupe / rejected| TP5
+    end
+
+    H5 --> Bridge
+    Bridge --> RA1
+    Bridge --> RB1
+    RA1 --> RA2
+    RA2 --> RA3
+    RA2 --> RA4
+    RB1 --> RB2
+    RB2 --> RB3
+    RB2 --> RB4
+
+    RA4 --> TryPublishFlow
+    RB4 --> TryPublishFlow
+
+    TP2 -->|"dispatches on shared Bus"| H2
+
+    style HostApp fill:#e8f5e9,stroke:#2e7d32,color:#000
+    style Bridge fill:#fff3e0,stroke:#e65100,color:#000
+    style RemoteA fill:#fce4ec,stroke:#dd2c00,color:#000
+    style RemoteB fill:#e3f2fd,stroke:#0277bd,color:#000
+    style TryPublishFlow fill:#f3e5f5,stroke:#6a1b9a,color:#000
+    style TP4 fill:#c8e6c9,stroke:#2e7d32,color:#000
+    style TP5 fill:#ffcdd2,stroke:#c62828,color:#000
+```
+
+### Request–Response Correlation
+
+```mermaid
+sequenceDiagram
+    participant P as Publisher
+    participant Bus as Bus (createBus)
+    participant RRC as RequestResponseCoordinator
+    participant S as Subscriber
+
+    P->>Bus: request(message, timeoutMs, responseValidator?)
+    Bus->>RRC: waitForResponse(messageId, timeoutMs)
+    RRC-->>RRC: start timeout timer
+    Bus->>Bus: runPublish(message) → validate → policy → enqueue
+    Bus->>S: CustomEvent dispatched via EventTarget
+
+    S->>Bus: publish(response with causationId = request.messageId)
+    Bus->>Bus: validate → enqueue → deliver
+    Bus->>RRC: tryResolve(response)
+    RRC-->>RRC: match causationId → clear timer
+
+    alt responseValidator provided
+        RRC->>Bus: resolve promise
+        Bus->>Bus: responseValidator.safeParse(result)
+        Bus->>P: return validated TRes
+    else no validator
+        RRC->>Bus: resolve promise
+        Bus->>P: return MessageBase
+    end
+
+    Note over RRC: On timeout → BusValidationError code: timeout
+    Note over RRC: On dispose → rejects all pending with code: delivery
+```
+
+### State Sync Operations
+
+```mermaid
+flowchart TD
+    subgraph StateSyncCoord["StateSyncCoordinator (attachStateSync)"]
+        direction TB
+        REV["revisions: Map&lt;stateKey, number&gt;"]
+        SNAP["snapshots: Map&lt;stateKey, unknown&gt;"]
+    end
+
+    BDH["bus.registerBeforeDeliver hook<br/>filters kind === 'state'"]
+
+    BDH --> PARSE["StateMessageSchema.safeParse()"]
+    PARSE -->|invalid| SKIP["skip"]
+    PARSE -->|valid| OP{"operation?"}
+
+    OP -->|replace| REP["applyReplace()<br/>check conflict strategy<br/>set revision + snapshot"]
+    OP -->|patch| PAT["applyPatch()<br/>mergePatch(current, incoming.payload)<br/>→ applyReplace with merged result"]
+    OP -->|remove| REM["revisions.delete(key)<br/>snapshots.delete(key)"]
+    OP -->|reset| RST["revisions.set(key, 0)<br/>snapshots.delete(key)"]
+
+    subgraph ConflictCheck["Conflict Strategy"]
+        CS1["last-writer-wins: always accept"]
+        CS2["reject-if-stale: incomingRev <= currentRev → reject"]
+        CS3["custom: customConflict(ctx) → accept | reject"]
+    end
+
+    REP --> ConflictCheck
+
+    REP --> REV
+    REP --> SNAP
+    REM --> REV
+    REM --> SNAP
+    RST --> REV
+    RST --> SNAP
+
+    style StateSyncCoord fill:#e3f2fd,stroke:#1565c0,color:#000
+    style ConflictCheck fill:#fff3e0,stroke:#e65100,color:#000
+```
+
+### Message Contract Hierarchy
+
+```mermaid
+classDiagram
+    class MessageBase {
+        +messageName: string
+        +messageVersion: number
+        +messageId: UUID
+        +correlationId: UUID
+        +causationId?: UUID
+        +source: string
+        +target?: string
+        +occurredAtUtc: ISO datetime
+        +kind: MessageKind
+        +sensitivity: Sensitivity
+        +validationDescriptor?: ValidationDescriptor
+    }
+
+    class EventMessage {
+        +kind: "event"
+        +eventKind: string
+        +payload: T
+    }
+
+    class CommandMessage {
+        +kind: "command"
+        +commandName: string
+        +payload: T
+        +ackTimeoutMs?: number
+    }
+
+    class QueryMessage {
+        +kind: "query"
+        +queryName: string
+        +payload: T
+        +expectedResult?: string
+        +timeoutMs?: number
+    }
+
+    class StateMessage {
+        +kind: "state"
+        +stateKey: string
+        +operation: StateOperation
+        +revision: number
+        +payload: unknown
+    }
+
+    class UserContextMessage {
+        +kind: "user-context"
+        +payload: UserContext
+    }
+
+    class UserContext {
+        +userId: string
+        +displayName: string
+        +avatarUrl?: URL
+        +roles: string[]
+        +tenant?: string
+        +locale: string
+        +featureFlags: Record
+        +sessionVersion?: string
+    }
+
+    class MessageKind {
+        <<enumeration>>
+        event
+        command
+        query
+        state
+        user-context
+    }
+
+    class Sensitivity {
+        <<enumeration>>
+        public
+        internal
+        restricted
+    }
+
+    class StateOperation {
+        <<enumeration>>
+        replace
+        patch
+        remove
+        reset
+    }
+
+    MessageBase <|-- EventMessage
+    MessageBase <|-- CommandMessage
+    MessageBase <|-- QueryMessage
+    MessageBase <|-- StateMessage
+    MessageBase <|-- UserContextMessage
+    MessageBase --> MessageKind
+    MessageBase --> Sensitivity
+    StateMessage --> StateOperation
+    UserContextMessage --> UserContext
+```
+
 ## Install
 
 pnpm add @lkovari/microfrontend-platform-communication zod
