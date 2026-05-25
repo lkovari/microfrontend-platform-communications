@@ -561,12 +561,117 @@ pnpm add @lkovari/microfrontend-platform-communication zod
 - `Vue useSubscribe cleans up on unmount` - verifies Vue lifecycle cleanup.
 - `two subscribers on one bus can model remote targeting` - verifies targeting model across subscribers.
 
+## Tech Information
+
+| Technology | Role | Website |
+| --- | --- | --- |
+| WHATWG DOM Standard | Runtime bus backbone — `EventTarget`, `CustomEvent`, `Event` for in-process pub/sub messaging | [dom.spec.whatwg.org](https://dom.spec.whatwg.org/) |
+| TypeScript | Primary language, strict mode, ES2022 target | [typescriptlang.org](https://www.typescriptlang.org/) |
+| Zod | Runtime schema validation on the bus boundary | [zod.dev](https://zod.dev/) |
+| tsup | Library bundler (ESM + CJS, dts, tree-shake) | [tsup.egoist.dev](https://tsup.egoist.dev/) |
+| Vitest | Unit and integration test runner | [vitest.dev](https://vitest.dev/) |
+| ESLint | Linting (flat config, typescript-eslint) | [eslint.org](https://eslint.org/) |
+| Prettier | Code formatting | [prettier.io](https://prettier.io/) |
+| pnpm | Package manager and workspace orchestration | [pnpm.io](https://pnpm.io/) |
+| Node.js | Runtime (>=18.17.0) | [nodejs.org](https://nodejs.org/) |
+| Angular | Framework adapter (peer >=17.0.0) | [angular.dev](https://angular.dev/) |
+| React | Framework adapter (peer >=18.0.0) | [react.dev](https://react.dev/) |
+| Vue | Framework adapter (peer >=3.3.0) | [vuejs.org](https://vuejs.org/) |
+| RxJS | Observable integration for Angular BusService | [rxjs.dev](https://rxjs.dev/) |
+| Webpack Module Federation | Examples workspace (host + remote demo) | [webpack.js.org](https://webpack.js.org/) |
+| Playwright | E2E smoke tests for federation examples | [playwright.dev](https://playwright.dev/) |
+| tsx | TypeScript execution for scripts | [tsx.is](https://tsx.is/) |
+| rimraf | Cross-platform `rm -rf` for clean builds | [github.com/isaacs/rimraf](https://github.com/isaacs/rimraf) |
+| jsdom | DOM environment for Vitest adapter tests | [github.com/jsdom/jsdom](https://github.com/jsdom/jsdom) |
+| zod-to-json-schema | Contract snapshot export (Zod → JSON Schema) | [github.com/StefanTerdell/zod-to-json-schema](https://github.com/StefanTerdell/zod-to-json-schema) |
+| npm | Public registry for package publishing | [npmjs.com](https://www.npmjs.com/) |
+
+## Appendix: Web Messaging Standards — WHATWG DOM vs W3C Web Messaging
+
+Two web platform standards provide browser-native messaging primitives relevant to microfrontend communication. This project uses one of them; this section explains both, when each is practical, and why the choice was made.
+
+### WHATWG DOM Standard — `EventTarget` + `CustomEvent`
+
+| | |
+| --- | --- |
+| Specification | [dom.spec.whatwg.org](https://dom.spec.whatwg.org/) |
+| Maintained by | WHATWG (Apple, Google, Mozilla, Microsoft) |
+| Status | Living Standard (continuously updated) |
+
+**What it provides:**
+
+`EventTarget` is a generic event dispatch interface. Any code in the same JavaScript realm can create a standalone `EventTarget`, register listeners with `addEventListener`, and dispatch events with `dispatchEvent`. `CustomEvent` extends `Event` with a typed `detail` property for carrying arbitrary data. `Event` is the base class checked during delivery.
+
+**When practical to use:**
+
+- All communicating participants share the same JavaScript realm (same page, same `window`, same thread)
+- Module Federation, single-spa, or any loader that injects remote bundles into the host page at runtime
+- You need zero-copy, synchronous or microtask delivery without serialization overhead
+- Monorepo or polyrepo — repository layout is irrelevant as long as all code runs in one page
+
+**Not practical when:**
+
+- Remotes run in iframes (separate browsing context, separate `window`)
+- Communication crosses Web Workers or Service Workers
+- Cross-origin or cross-tab messaging is required
+
+**Usage in this project:**
+
+This is the messaging foundation of the library. The bus in `src/core/bus.ts` creates a standalone `EventTarget` as the event backbone. Every message is wrapped in a `CustomEvent<MessageBase>` with the typed payload in `detail`, then dispatched via `dispatchEvent`. Subscribers register via `addEventListener` and unregister via `removeEventListener`. The `Event` base class is used in `src/core/bus-event.ts` to guard event parsing. Additionally, `queueMicrotask` (from the HTML spec, aligned with WHATWG) is used in `src/core/dispatcher.ts` for async dispatch mode.
+
+| API | Where used |
+| --- | --- |
+| `new EventTarget()` | `src/core/bus.ts` — single bus instance backbone |
+| `new CustomEvent<MessageBase>(type, { detail })` | `src/core/bus.ts` — message envelope for dispatch |
+| `target.addEventListener(type, listener)` | `src/core/bus.ts` — `subscribe()` and `observeAll()` |
+| `target.removeEventListener(type, listener)` | `src/core/bus.ts` — `unsubscribe` callbacks and `dispose()` |
+| `target.dispatchEvent(event)` | `src/core/bus.ts` — message delivery |
+| `event instanceof CustomEvent` | `src/core/bus-event.ts` — event type guard |
+| `queueMicrotask(fn)` | `src/core/dispatcher.ts` — microtask dispatch mode |
+| `crypto.randomUUID()` | `src/core/host-bridge.ts` — message id generation |
+
+### W3C Web Messaging — `postMessage`, `MessageChannel`, `BroadcastChannel`
+
+| | |
+| --- | --- |
+| Specification | [w3.org/TR/webmessaging](https://www.w3.org/TR/webmessaging/) |
+| Maintained by | W3C |
+| Status | W3C Recommendation |
+
+**What it provides:**
+
+`window.postMessage` sends a structured-cloneable message to another browsing context (iframe, popup, opener). `MessageChannel` creates a pair of entangled `MessagePort` objects for dedicated two-party communication. `BroadcastChannel` provides same-origin, multi-tab publish/subscribe.
+
+**When practical to use:**
+
+- Remotes are embedded in iframes (cross-context or cross-origin)
+- Communication between browser tabs or windows on the same origin
+- Host-to-Worker or Worker-to-Worker messaging via `MessagePort`
+- Any scenario where participants do **not** share the same JavaScript realm
+
+**Not practical when:**
+
+- All participants share the same page runtime (adds unnecessary structured clone serialization overhead)
+- You need to pass non-cloneable values (functions, class instances, `EventTarget` references)
+- You need synchronous delivery (all `postMessage` variants are asynchronous)
+
+**Why NOT used in this project:**
+
+This library is designed for Module Federation microfrontends where all remotes are loaded into the **same page runtime** — they share one `window` and one JavaScript realm. Using `postMessage` or `MessageChannel` would introduce unnecessary structured clone serialization on every message, lose TypeScript type fidelity across the boundary, and add complexity (origin checks, port management) with no architectural benefit. No source file in this project references `postMessage`, `MessageChannel`, `MessagePort`, `BroadcastChannel`, or `MessageEvent`.
+
+### Comparison summary
+
+| Concern | WHATWG DOM (`EventTarget` + `CustomEvent`) | W3C Web Messaging (`postMessage` / `MessageChannel`) |
+| --- | --- | --- |
+| Scope | Same JavaScript realm (same page, same thread) | Cross-origin, cross-window, cross-worker |
+| Serialization | None — passes object references directly | Structured clone (deep copy, no functions) |
+| Performance | Zero-copy, synchronous or microtask delivery | Structured clone overhead per message |
+| Type safety | `CustomEvent<T>.detail` preserves typed objects | Loses type information through structured clone |
+| Complexity | Minimal — browser-native, no setup | Origin checks, port management, channel lifecycle |
+| iframe support | No — cannot cross browsing contexts | Yes — designed for cross-context communication |
+| Used in this project | Yes — entire bus runtime | No — not needed for same-realm Module Federation |
+
 ## License
 
 MIT
-
-## Nx workspace usage prompts
-
-For copy-paste prompts targeting separate Nx host/remote workspaces, see:
-- [`workspace-usage-prompts.md`](workspace-usage-prompts.md)
 
