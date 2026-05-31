@@ -34,6 +34,7 @@ export { ConsoleObservabilityAdapter } from './observability.js';
 export type { PublishOutcome } from './bus.js';
 export {
   createHostBridge,
+  generateAccessToken,
   isValidMfeBridgeHandle,
   MFE_BRIDGE_PROTOCOL_VERSION,
 } from './host-bridge.js';

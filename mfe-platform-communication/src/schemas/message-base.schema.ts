@@ -25,3 +25,11 @@ export const MessageBaseSchema = z
     validationDescriptor: ValidationDescriptorSchema.optional(),
   })
   .strict();
+
+export function versionedMessageSchema<
+  TShape extends z.ZodRawShape,
+  TUnknown extends z.UnknownKeysParam,
+  TCatchall extends z.ZodTypeAny,
+>(schema: z.ZodObject<TShape, TUnknown, TCatchall>, version: number) {
+  return schema.extend({ messageVersion: z.literal(version) });
+}

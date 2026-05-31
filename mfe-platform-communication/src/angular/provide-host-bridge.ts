@@ -27,6 +27,7 @@ export function provideHostBridge(
           remotes: options.remotes,
           ...(options.stateSync ? { stateSync: options.stateSync } : {}),
           ...(options.onConflict ? { onConflict: options.onConflict } : {}),
+          ...(options.accessToken ? { accessToken: options.accessToken } : {}),
         });
         const destroyRef = inject(DestroyRef);
         destroyRef.onDestroy(() => {

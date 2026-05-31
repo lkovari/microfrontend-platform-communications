@@ -15,9 +15,9 @@ export interface MfeBridgeHandle {
   readonly appId: string;
   readonly remotes: readonly string[];
   readonly stateSync?: StateSyncAttachOptions;
-  readonly getBus: () => Bus;
+  readonly getBus: (token?: string) => Bus;
   readonly getSnapshot?: (stateKey: string) => unknown;
-  tryPublish: (message: MessageBase) => AckResult;
+  tryPublish: (message: MessageBase, token?: string) => AckResult;
   dispose: () => void;
 }
 
@@ -35,6 +35,33 @@ export interface CreateHostBridgeOptions {
   readonly remotes: readonly string[];
   readonly stateSync?: StateSyncAttachOptions;
   readonly onConflict?: HostBridgeConflictPolicy;
+  readonly accessToken?: string;
+}
+
+const ACCESS_TOKEN_BYTES = 16;
+
+export function generateAccessToken(): string {
+  const bytes = new Uint8Array(ACCESS_TOKEN_BYTES);
+  crypto.getRandomValues(bytes);
+  let out = '';
+  for (const byte of bytes) {
+    out += byte.toString(16).padStart(2, '0');
+  }
+  return out;
+}
+
+function tokensEqual(expected: string, provided: string | undefined): boolean {
+  if (typeof provided !== 'string') {
+    return false;
+  }
+  if (expected.length !== provided.length) {
+    return false;
+  }
+  let mismatch = 0;
+  for (let i = 0; i < expected.length; i += 1) {
+    mismatch |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
+  }
+  return mismatch === 0;
 }
 
 function withGeneratedIds(message: MessageBase): MessageBase {
@@ -48,6 +75,15 @@ function withGeneratedIds(message: MessageBase): MessageBase {
 
 function toAckResult(correlationId: string, err: unknown): AckResult {
   const receivedAtUtc = new Date().toISOString();
+  if (err instanceof HostBridgeError && err.code === 'unauthorized') {
+    return {
+      accepted: false,
+      correlationId,
+      errorCode: 'unauthorized',
+      message: err.message,
+      receivedAtUtc,
+    };
+  }
   if (err instanceof BusPolicyError) {
     return {
       accepted: false,
@@ -134,7 +170,7 @@ function assertReturnableExisting(
       'mismatch',
     );
   }
-  if (existing.getBus() !== options.bus) {
+  if (existing.getBus(options.accessToken) !== options.bus) {
     throw new HostBridgeError(
       'Existing host bridge is bound to a different bus instance; cannot reuse with onConflict: return-existing',
       'mismatch',
@@ -213,16 +249,34 @@ export function createHostBridge(options: CreateHostBridgeOptions): MfeBridgeHan
     stateCoordinator = attachStateSync(options.bus, options.stateSync);
   }
 
+  const accessToken = options.accessToken;
+
+  function assertAuthorized(token: string | undefined): void {
+    if (accessToken === undefined) {
+      return;
+    }
+    if (!tokensEqual(accessToken, token)) {
+      throw new HostBridgeError(
+        'Access denied: a valid host bridge access token is required to use the bus.',
+        'unauthorized',
+      );
+    }
+  }
+
   const handle: MfeBridgeHandle = {
     protocolVersion: MFE_BRIDGE_PROTOCOL_VERSION,
     appId: options.appId,
     remotes: options.remotes,
     ...(options.stateSync ? { stateSync: options.stateSync } : {}),
-    getBus: () => options.bus,
-    tryPublish: (message: MessageBase) => {
+    getBus: (token?: string) => {
+      assertAuthorized(token);
+      return options.bus;
+    },
+    tryPublish: (message: MessageBase, token?: string) => {
       const correlationId = message.correlationId ?? crypto.randomUUID();
       const receivedAtUtc = new Date().toISOString();
       try {
+        assertAuthorized(token);
         const normalized = withGeneratedIds({
           ...message,
           correlationId,

@@ -12,6 +12,7 @@ import { CommandMessageSchema } from '../src/schemas/command-message.schema.js';
 import { QueryMessageSchema } from '../src/schemas/query-message.schema.js';
 import { StateMessageSchema } from '../src/schemas/state-message.schema.js';
 import { UserContextMessageSchema } from '../src/schemas/user-context-message.schema.js';
+import { versionedMessageSchema } from '../src/schemas/message-base.schema.js';
 
 function isoNow(): string {
   return new Date().toISOString();
@@ -1185,6 +1186,205 @@ describe('createBus', () => {
     });
     expect(infoSpy).toHaveBeenCalled();
     infoSpy.mockRestore();
+    bus.dispose();
+  });
+});
+
+describe('createBus kind-aware behavior', () => {
+  it('sendCommand resolves an Ack when an acknowledgment references the command messageId', async () => {
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      validators: {
+        'orders:refresh': CommandMessageSchema,
+        'orders:refresh:ack': OrdersFiltersEventSchema,
+      },
+    });
+    bus.subscribe('orders:refresh', (m) => {
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:refresh:ack',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: m.correlationId,
+        causationId: m.messageId,
+        source: 'remote-orders',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'orders.refresh.ack',
+        sensitivity: 'public',
+        payload: { filter: 'ok' },
+      });
+    });
+    const command: CommandMessage<{ force: boolean }> = {
+      messageName: 'orders:refresh',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'host',
+      occurredAtUtc: isoNow(),
+      kind: 'command',
+      commandName: 'orders.refresh',
+      sensitivity: 'internal',
+      payload: { force: true },
+      ackTimeoutMs: 1000,
+    };
+    const ack = await bus.sendCommand(command);
+    expect(ack.accepted).toBe(true);
+    bus.dispose();
+  });
+
+  it('sendCommand returns a timeout Nack when no acknowledgment arrives within ackTimeoutMs', async () => {
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      validators: {
+        'orders:refresh': CommandMessageSchema,
+      },
+    });
+    const command: CommandMessage<{ force: boolean }> = {
+      messageName: 'orders:refresh',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'host',
+      occurredAtUtc: isoNow(),
+      kind: 'command',
+      commandName: 'orders.refresh',
+      sensitivity: 'internal',
+      payload: { force: true },
+      ackTimeoutMs: 20,
+    };
+    const nack = await bus.sendCommand(command);
+    expect(nack).toMatchObject({ accepted: false, errorCode: 'timeout' });
+    bus.dispose();
+  });
+
+  it('request falls back to the query message timeoutMs when no timeout argument is given', async () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      validators: {
+        'orders:query': QueryMessageSchema,
+      },
+    });
+    const req: QueryMessage<{ q: string }> = {
+      messageName: 'orders:query',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'query',
+      queryName: 'orders.query',
+      sensitivity: 'public',
+      payload: { q: 'open' },
+      timeoutMs: 20,
+    };
+    await expect(bus.request(req)).rejects.toThrow(expect.objectContaining({ code: 'timeout' }));
+    bus.dispose();
+  });
+
+  it('request rejects when the response messageName does not match the query expectedResult', async () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      validators: {
+        'orders:query': QueryMessageSchema,
+        'orders:wrong': OrdersFiltersEventSchema,
+      },
+    });
+    bus.subscribe('orders:query', (m) => {
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:wrong',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: m.correlationId,
+        causationId: m.messageId,
+        source: 'host',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'orders.wrong',
+        sensitivity: 'public',
+        payload: { filter: 'x' },
+      });
+    });
+    const req: QueryMessage<{ q: string }> = {
+      messageName: 'orders:query',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'query',
+      queryName: 'orders.query',
+      sensitivity: 'public',
+      payload: { q: 'open' },
+      expectedResult: 'orders:result',
+      timeoutMs: 1000,
+    };
+    await expect(bus.request(req)).rejects.toThrow(expect.objectContaining({ code: 'validation' }));
+    bus.dispose();
+  });
+
+  it('request resolves when the response messageName matches the query expectedResult', async () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      validators: {
+        'orders:query': QueryMessageSchema,
+        'orders:result': OrdersFiltersEventSchema,
+      },
+    });
+    bus.subscribe('orders:query', (m) => {
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:result',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: m.correlationId,
+        causationId: m.messageId,
+        source: 'host',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'orders.result',
+        sensitivity: 'public',
+        payload: { filter: 'done' },
+      });
+    });
+    const req: QueryMessage<{ q: string }> = {
+      messageName: 'orders:query',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'query',
+      queryName: 'orders.query',
+      sensitivity: 'public',
+      payload: { q: 'open' },
+      expectedResult: 'orders:result',
+      timeoutMs: 1000,
+    };
+    const res = await bus.request(req);
+    expect(res.messageName).toBe('orders:result');
+    bus.dispose();
+  });
+
+  it('autoRegisterTopics populates the provided registry with version ranges from validators', () => {
+    const registry = new TopicRegistry();
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      autoRegisterTopics: true,
+      registry,
+      validators: {
+        'orders:v2': versionedMessageSchema(OrdersFiltersEventSchema, 2),
+      },
+    });
+    expect(registry.getRegistration('orders:v2')).toMatchObject({
+      messageName: 'orders:v2',
+      minMessageVersion: 2,
+      maxMessageVersion: 2,
+    });
     bus.dispose();
   });
 });

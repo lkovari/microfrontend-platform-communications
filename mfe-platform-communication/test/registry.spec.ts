@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { MessageBase } from '../src/contracts/message-base.js';
 import { BusPolicyError } from '../src/core/errors.js';
 import { TopicRegistry } from '../src/core/registry.js';
+import { EventMessageSchema } from '../src/schemas/event-message.schema.js';
+import { MessageBaseSchema, versionedMessageSchema } from '../src/schemas/message-base.schema.js';
 
 function baseMessage(overrides: Partial<MessageBase> = {}): MessageBase {
   return {
@@ -100,5 +103,51 @@ describe('TopicRegistry', () => {
       maxMessageVersion: 3,
     });
     expect(() => registry.assertCanPublish(baseMessage({ messageVersion: 2 }))).not.toThrow();
+  });
+});
+
+describe('TopicRegistry.registerFromValidators', () => {
+  it('derives a fixed version range from a literal messageVersion schema', () => {
+    const registry = TopicRegistry.fromValidators({
+      'orders:v3': versionedMessageSchema(EventMessageSchema, 3),
+    });
+    expect(registry.getRegistration('orders:v3')).toMatchObject({
+      messageName: 'orders:v3',
+      minMessageVersion: 3,
+      maxMessageVersion: 3,
+    });
+  });
+
+  it('derives min and max from inclusive numeric messageVersion bounds', () => {
+    const schema = MessageBaseSchema.extend({ messageVersion: z.number().int().min(2).max(4) });
+    const registry = TopicRegistry.fromValidators({ 'orders:range': schema });
+    expect(registry.getRegistration('orders:range')).toMatchObject({
+      minMessageVersion: 2,
+      maxMessageVersion: 4,
+    });
+  });
+
+  it('leaves a generic messageVersion schema unconstrained', () => {
+    const registry = TopicRegistry.fromValidators({ 'orders:any': EventMessageSchema });
+    const registration = registry.getRegistration('orders:any');
+    expect(registration).toBeDefined();
+    expect(registration?.minMessageVersion).toBeUndefined();
+    expect(registration?.maxMessageVersion).toBeUndefined();
+  });
+
+  it('does not overwrite an explicit registration', () => {
+    const registry = new TopicRegistry();
+    registry.register({
+      messageName: 'orders:v3',
+      allowedPublishers: ['host'],
+      minMessageVersion: 1,
+    });
+    registry.registerFromValidators({
+      'orders:v3': versionedMessageSchema(EventMessageSchema, 3),
+    });
+    expect(registry.getRegistration('orders:v3')).toMatchObject({
+      allowedPublishers: ['host'],
+      minMessageVersion: 1,
+    });
   });
 });

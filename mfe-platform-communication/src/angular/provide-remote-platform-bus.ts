@@ -2,7 +2,13 @@ import { makeEnvironmentProviders, type EnvironmentProviders } from '@angular/co
 import { isValidMfeBridgeHandle } from '../core/host-bridge.js';
 import { BUS_TOKEN } from './provide-bus.js';
 
-export function provideRemotePlatformBus(): EnvironmentProviders {
+export interface RemotePlatformBusOptions {
+  readonly accessToken?: string;
+}
+
+export function provideRemotePlatformBus(
+  options?: RemotePlatformBusOptions,
+): EnvironmentProviders {
   return makeEnvironmentProviders([
     {
       provide: BUS_TOKEN,
@@ -18,7 +24,7 @@ export function provideRemotePlatformBus(): EnvironmentProviders {
             'provideRemotePlatformBus() requires a valid window.__MFE_BRIDGE__ from the host. Ensure the host called createHostBridge() before loading this remote.',
           );
         }
-        return bridge.getBus();
+        return bridge.getBus(options?.accessToken);
       },
     },
   ]);

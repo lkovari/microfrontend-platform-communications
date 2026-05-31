@@ -1,6 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import type { ZodType } from 'zod';
 import type { MessageBase } from '../contracts/message-base.js';
+import type { AckResult } from '../contracts/envelopes.js';
 import type { Bus, BusSubscribeOptions, Unsubscribe } from '../core/bus.js';
 import { Observable } from 'rxjs';
 import { BUS_TOKEN } from './provide-bus.js';
@@ -20,6 +21,10 @@ export class BusService {
 
   publish<M extends MessageBase>(message: M): void {
     this.requiredBus.publish(message);
+  }
+
+  sendCommand<TCmd extends MessageBase>(command: TCmd): Promise<AckResult> {
+    return this.requiredBus.sendCommand(command);
   }
 
   request<TReq extends MessageBase>(message: TReq, timeoutMs?: number): Promise<MessageBase>;

@@ -20,6 +20,7 @@ export function createHostBridgePlugin(options: Omit<CreateHostBridgeOptions, 'b
         remotes: options.remotes,
         ...(options.stateSync ? { stateSync: options.stateSync } : {}),
         ...(options.onConflict ? { onConflict: options.onConflict } : {}),
+        ...(options.accessToken ? { accessToken: options.accessToken } : {}),
       });
       app.provide(HostBridgeKey, bridge);
     },

@@ -3,6 +3,7 @@ import { createBus } from '../src/core/bus.js';
 import { HostBridgeError } from '../src/core/errors.js';
 import {
   createHostBridge,
+  generateAccessToken,
   isValidMfeBridgeHandle,
   MFE_BRIDGE_PROTOCOL_VERSION,
 } from '../src/core/host-bridge.js';
@@ -455,3 +456,102 @@ function getBusReturnsPublish(bridge: { getBus: () => unknown }): boolean {
   }
   return typeof Reflect.get(b, 'publish') === 'function';
 }
+
+describe('createHostBridge access token gating', () => {
+  afterEach(() => {
+    if (typeof window !== 'undefined') {
+      delete window.__MFE_BRIDGE__;
+    }
+  });
+
+  function makeGatedBridge(accessToken: string) {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    const bridge = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['remote-orders'],
+      accessToken,
+    });
+    return { bus, bridge };
+  }
+
+  function buildInbound(): EventMessage<{ filter: string }> {
+    return {
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    };
+  }
+
+  it('getBus returns the bus when the correct token is presented', () => {
+    const token = generateAccessToken();
+    const { bus, bridge } = makeGatedBridge(token);
+    expect(bridge.getBus(token)).toBe(bus);
+    bridge.dispose();
+    bus.dispose();
+  });
+
+  it('getBus throws an unauthorized error for a wrong or missing token', () => {
+    const token = generateAccessToken();
+    const { bus, bridge } = makeGatedBridge(token);
+    expect(() => bridge.getBus('wrong-token')).toThrow(
+      expect.objectContaining({ code: 'unauthorized' }),
+    );
+    expect(() => bridge.getBus()).toThrow(expect.objectContaining({ code: 'unauthorized' }));
+    bridge.dispose();
+    bus.dispose();
+  });
+
+  it('tryPublish accepts a valid token and returns an unauthorized Nack for a wrong token', () => {
+    const token = generateAccessToken();
+    const { bus, bridge } = makeGatedBridge(token);
+    expect(bridge.tryPublish(buildInbound(), token).accepted).toBe(true);
+    const nack = bridge.tryPublish(buildInbound(), 'wrong-token');
+    expect(nack).toMatchObject({ accepted: false, errorCode: 'unauthorized' });
+    bridge.dispose();
+    bus.dispose();
+  });
+
+  it('does not gate access when no accessToken is configured', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: { 'orders:filters-changed': OrdersFiltersEventSchema },
+    });
+    const bridge = createHostBridge({ appId: 'shell-host', bus, remotes: ['remote-orders'] });
+    expect(bridge.getBus()).toBe(bus);
+    expect(bridge.getBus('anything')).toBe(bus);
+    bridge.dispose();
+    bus.dispose();
+  });
+
+  it('does not expose the access token as a readable handle property', () => {
+    const token = generateAccessToken();
+    const { bus, bridge } = makeGatedBridge(token);
+    expect(Reflect.get(bridge, 'accessToken')).toBeUndefined();
+    expect(Object.values(bridge)).not.toContain(token);
+    bridge.dispose();
+    bus.dispose();
+  });
+
+  it('generateAccessToken returns a 128-bit hex token and is non-repeating', () => {
+    const a = generateAccessToken();
+    const b = generateAccessToken();
+    expect(a).toMatch(/^[0-9a-f]{32}$/);
+    expect(b).toMatch(/^[0-9a-f]{32}$/);
+    expect(a).not.toBe(b);
+  });
+});

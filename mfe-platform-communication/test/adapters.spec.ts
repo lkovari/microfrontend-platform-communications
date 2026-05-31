@@ -23,8 +23,10 @@ import {
   useSubscribe as useVueSubscribe,
 } from '../src/vue/index.js';
 import type { EventMessage } from '../src/contracts/event-message.js';
+import type { CommandMessage } from '../src/contracts/command-message.js';
 import type { MessageBase } from '../src/contracts/message-base.js';
-import { createHostBridge } from '../src/core/host-bridge.js';
+import { createHostBridge, generateAccessToken } from '../src/core/host-bridge.js';
+import { CommandMessageSchema } from '../src/schemas/command-message.schema.js';
 import { OrdersFiltersEventSchema } from './helpers.js';
 
 function createTestEnvironmentInjector(
@@ -633,6 +635,81 @@ describe('framework adapters', () => {
     });
     expect(count).toBe(1);
     ui.unmount();
+  });
+
+  it('Angular provideRemotePlatformBus forwards the access token to the bridge', () => {
+    const token = generateAccessToken();
+    const hostBus = createBus({
+      appId: 'shell',
+      dispatch: 'sync',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    const bridge = createHostBridge({
+      appId: 'shell',
+      bus: hostBus,
+      remotes: ['remote-orders'],
+      accessToken: token,
+    });
+    const injector = createTestEnvironmentInjector([provideRemotePlatformBus({ accessToken: token })]);
+    expect(injector.get(BUS_TOKEN)).toBe(hostBus);
+    injector.destroy();
+    bridge.dispose();
+    hostBus.dispose();
+  });
+
+  it('Angular BusService.sendCommand resolves an Ack on acknowledgment', async () => {
+    const injector = LegacyInjector.create({
+      providers: [
+        {
+          provide: BUS_TOKEN,
+          useFactory: () =>
+            createBus({
+              appId: 'shell',
+              dispatch: 'sync',
+              validators: {
+                'orders:refresh': CommandMessageSchema,
+                'orders:refresh:ack': OrdersFiltersEventSchema,
+              },
+            }),
+        },
+        BusService,
+      ],
+    });
+    const busSvc = injector.get(BusService);
+    const bus = injector.get(BUS_TOKEN);
+    bus.subscribe('orders:refresh', (m) => {
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:refresh:ack',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: m.correlationId,
+        causationId: m.messageId,
+        source: 'remote-orders',
+        occurredAtUtc: new Date().toISOString(),
+        kind: 'event',
+        eventKind: 'orders.refresh.ack',
+        sensitivity: 'public',
+        payload: { filter: 'ok' },
+      });
+    });
+    const command: CommandMessage<{ force: boolean }> = {
+      messageName: 'orders:refresh',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'shell',
+      occurredAtUtc: new Date().toISOString(),
+      kind: 'command',
+      commandName: 'orders.refresh',
+      sensitivity: 'internal',
+      payload: { force: true },
+      ackTimeoutMs: 1000,
+    };
+    const ack = await busSvc.sendCommand(command);
+    expect(ack.accepted).toBe(true);
+    bus.dispose();
   });
 
   it('Vue createHostBridgePlugin exposes bridge on window', () => {

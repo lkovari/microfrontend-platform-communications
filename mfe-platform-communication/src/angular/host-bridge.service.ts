@@ -17,11 +17,11 @@ export class HostBridgeService {
     return this.bridge;
   }
 
-  tryPublish(message: MessageBase): AckResult {
-    return this.requiredBridge.tryPublish(message);
+  tryPublish(message: MessageBase, token?: string): AckResult {
+    return this.requiredBridge.tryPublish(message, token);
   }
 
-  getBus(): Bus {
-    return this.requiredBridge.getBus();
+  getBus(token?: string): Bus {
+    return this.requiredBridge.getBus(token);
   }
 }

@@ -8,53 +8,60 @@ This library is a framework-agnostic solution for messaging between microfronten
 It uses a host-orchestrated communication model. Runtime bus is based on browser EventTarget and CustomEvent,
 wrapped with a typed API. Contracts are TypeScript types; validation is done by Zod on the bus boundary.
 
+## Features
+
+Framework-agnostic, host-mediated messaging for native-federated microfrontends (Angular, React, Vue). Core capabilities:
+
+- **Typed message bus** — single shared bus over the browser `EventTarget` / `CustomEvent`, wrapped in a typed publish/subscribe API.
+- **Host-mediated routing** — the host owns routing (`target` vs broadcast); remotes never talk directly to each other.
+- **Zod validation at the boundary** — every message is validated against its schema on publish; `validationDescriptor` validates shape only (field rules are tooling metadata).
+- **Dedupe, TTL, correlation** — duplicate `messageId` drop, message expiry, and `correlationId` / `causationId` tracking. `attemptPublish` / bridge `tryPublish` return explicit `Nack`s (including `errorCode: 'dedupe'`).
+- **Request/response** — `bus.request()` correlates a response to its request by `causationId`; `failFastOnDispatchError` avoids the silent 5s timeout when `onDispatchError` swallows publish errors.
+- **Observability hooks** — optional `ObservabilityAdapter` (+ `ConsoleObservabilityAdapter`) for publish/deliver/error/timeout.
+- **TopicRegistry ACL + versioning** — per-`messageName` `allowedPublishers` / `allowedSubscribers` and `min`/`maxMessageVersion`.
+- **State sync** — host-owned shared state with revisions and `replace` / `patch` / `remove` / `reset` operations, plus `getSnapshot()` for late-joining remotes.
+- **Framework adapters** — first-class Angular / React / Vue entry points.
+- **Contract snapshots** — `contracts-snapshot/` committed; CI fails on uncommitted schema drift.
+
+### Token-gated bridge access (security)
+
+The host can pass an unguessable `accessToken` (128-bit CSPRNG hex from `generateAccessToken()`) to `createHostBridge`; remotes must present it via `getBus(token)` / `tryPublish(message, token)` before using the bus. The token is held only in a closure (never a readable property on `window.__MFE_BRIDGE__`), so holding a reference to the global handle is no longer enough to inject messages. A wrong or missing token throws a `HostBridgeError` (`'unauthorized'`) or returns an `unauthorized` `Nack`. Forwarded through all adapters: `provideRemotePlatformBus({ accessToken })`, `provideHostBridge`, `HostBridgeService`, React `HostBridgeProvider`, Vue `createHostBridgePlugin`. Gating is opt-in and backward compatible.
+
+### Kind-aware runtime behavior
+
+The bus now acts on kind-specific fields instead of treating `kind` as a pure convention. `bus.request()` falls back to the query message's `timeoutMs` when no explicit timeout is given and enforces the response `messageName` against `expectedResult`. New `bus.sendCommand(command): Promise<AckResult>` publishes a command and awaits an acknowledgement (`causationId === command.messageId`) bounded by `ackTimeoutMs`, resolving an `Ack` or a timeout `Nack`. Exposed via Angular `BusService.sendCommand`.
+
+### Registry auto-registration
+
+`TopicRegistry.registerFromValidators()` / static `fromValidators()` / `getRegistration()` derive topics and version ranges directly from the Zod validators — reading a literal or inclusive min/max `messageVersion` — so they no longer need to be hand-listed; explicit `register()` entries always win. The `versionedMessageSchema(schema, version)` helper pins `messageVersion` to a literal, and `createBus({ autoRegisterTopics: true })` wires it in.
+
 ## Topology
 
-Microfrontends (remotes) are not communicate directly with each other.
-All messages go through Host (Shell Bus).
+Microfrontends (remotes) do not communicate directly with each other.
+All messages flow through the Host (Shell Bus).
 
-```text
-                             typed messages
- Remote A  ──────────────────────────────►  ┌────────────────────────────┐
-                                             │ Host / Shell Bus           │
-                             typed messages  │ + Host Bridge              │
- Remote B  ──────────────────────────────►  │ + Policy                   │
-                                             │ + State sync               │
-                             typed messages  │                            │
- Remote C  ──────────────────────────────►  └─────────────┬──────────────┘
-                                                         │
-                                                         ▼
-                                                ┌──────────────────────────────────────┐
-                                                │ Backend / BFF (optional, e.g. NestJS)│
-                                                └──────────────────────────────────────┘
+```mermaid
+graph LR
+    RemoteA["Remote A"] -->|"typed messages"| HostBus
+    RemoteB["Remote B"] -->|"typed messages"| HostBus
+    RemoteC["Remote C"] -->|"typed messages"| HostBus
+    HostBus -->|"host to remote"| RemoteA
+    HostBus -->|"host to remote"| RemoteB
+    HostBus -->|"host to remote"| RemoteC
+    HostBus -->|"optional"| Backend["Backend / BFF (e.g. NestJS)"]
+    subgraph HostBus ["Host / Shell Bus"]
+        Bridge["Host Bridge (token-gated)"]
+        Policy["Policy + TopicRegistry"]
+        StateSync["State sync"]
+    end
 ```
 
-**Remotes → Host**
+- Remotes publish typed messages to the Host Bus.
+- Remote-to-remote communication also goes via the Host (no direct remote-to-remote).
+- The Host fans messages back out to the subscribed remotes.
+- The Host may also connect to a Backend / BFF (optional, e.g. NestJS).
 
-```text
-Remote A ---> Host Bus
-Remote B ---> Host Bus
-Remote C ---> Host Bus
-```
-
-**Remote → Remote (only via Host; no direct remote-to-remote)**
-
-```text
-Remote A ---> Host Bus <--- Remote B
-Remote C ---> Host Bus
-```
-
-**Host → Remotes (simplified)**
-
-```text
-Host Bus ---> Remote A
-Host Bus ---> Remote B
-Host Bus ---> Remote C
-```
-
-Host may also connect to Backend / BFF (optional, e.g. NestJS).
-
-One shared bus instance exist, exposed via window.__MFE_BRIDGE__.
+One shared bus instance exists, exposed via `window.__MFE_BRIDGE__`.
 
 Important:
 - Remote-to-remote communication also go via Host
@@ -665,26 +672,26 @@ Typical uses: filters changed, navigation completed, feature flags updated, remo
 
 ### `command`
 
-An imperative action the host or another participant should perform. Commands often imply acknowledgement semantics at the bridge layer (see host bridge / policy); the contract includes an optional `ackTimeoutMs` field for application-layer ACK handling. **The bus does not read `ackTimeoutMs` in 0.x** — implement timeouts in your handler or orchestration layer.
+An imperative action the host or another participant should perform. Use `bus.sendCommand(command)` to publish a command and await acknowledgement: the bus waits (bounded by `ackTimeoutMs`, default 5000 ms) for any message whose `causationId` equals the command's `messageId`, then resolves an `Ack`, or an `Nack` with `errorCode: 'timeout'` if no acknowledgement arrives. Plain `bus.publish(command)` remains fire-and-forget.
 
 | Field | Role |
 | --- | --- |
 | `commandName` | Non-empty string naming the command. |
 | `payload` | Arguments for the handler. |
-| `ackTimeoutMs` | Optional hint for app-layer ACK wait (not enforced by the bus). |
+| `ackTimeoutMs` | Optional ACK wait used by `sendCommand()` (defaults to 5000 ms). |
 
 Typical uses: request navigation, trigger a host-side operation, ask another remote to refresh.
 
 ### `query`
 
-A request for information that expects a result shape. The contract allows naming the query, passing input `payload`, and optionally describing or bounding the response and wait time. **The bus does not read `timeoutMs` in 0.x** — use `bus.request()` with an explicit timeout or app-layer SLA logic.
+A request for information that expects a result shape. Use `bus.request(query)` to publish and await the response. When you omit the explicit `timeoutMs` argument, the bus falls back to the query message's own `timeoutMs` field (then to the 5000 ms default). When `expectedResult` is set and you do not pass a response validator, the bus also asserts the response `messageName` equals `expectedResult`.
 
 | Field | Role |
 | --- | --- |
 | `queryName` | Non-empty string naming the query. |
 | `payload` | Input to the query. |
-| `expectedResult` | Optional string hint (e.g. result type or schema id) for validators or routing. |
-| `timeoutMs` | Optional hint for app-layer wait (not enforced by the bus). |
+| `expectedResult` | Optional response `messageName` the bus enforces when no response validator is supplied. |
+| `timeoutMs` | Optional wait used by `request()` when no explicit timeout argument is given. |
 
 Typical uses: read shared UI or host state without mutating it, resolve a capability or configuration snapshot.
 
@@ -764,20 +771,6 @@ Health (conventions — not built-in state machine in 0.x):
 - `remote:ready` — remote mounted and subscribed; host may enable routes
 - `remote:failed` — remote load or bootstrap failed; host may show fallback UI
 
-## Design summary
-
-- Single package with subpath exports
-- Contracts define message structure; Zod validates at bus boundary
-- `validationDescriptor` validates **shape only** on the bus — field rules (`min`, `max`, etc.) are metadata for tooling, not runtime bus enforcement
-- Core handles policy, dedupe (with `tryPublish` dedupe `Nack`), TTL, correlation
-- Optional `ObservabilityAdapter` + `ConsoleObservabilityAdapter` for structured hooks
-- `attemptPublish` / bridge `tryPublish` return explicit `Nack` including `errorCode: 'dedupe'`
-- `failFastOnDispatchError` avoids silent 5s `request()` timeout when `onDispatchError` swallows publish errors
-- Host controls routing (`target` vs broadcast)
-- `remotes[]` on the bridge is metadata — use `TopicRegistry` for ACL
-- Contract snapshots in `contracts-snapshot/`; CI fails on uncommitted schema drift
-- Restricted messages blocked by default
-
 ## Security model
 
 Important rule: do **not** send sensitive data via the bus.
@@ -811,6 +804,29 @@ registry.register({
 
 const bus = createBus({ appId: 'shell-host', validators, registry });
 ```
+
+You can also let the registry derive topics and version ranges from your validators instead of hand-listing them (`autoRegisterTopics` never overwrites an explicit `register()` entry):
+
+```typescript
+const validators = {
+  'person:updated': versionedMessageSchema(StateMessageSchema, 1),
+};
+const bus = createBus({ appId: 'shell-host', validators, autoRegisterTopics: true });
+```
+
+**Bridge access token (anti-injection):** anyone holding a reference to the global `window.__MFE_BRIDGE__` could otherwise call `getBus()` / `tryPublish()` regardless of the `remotes` list. When the host passes an unguessable, cryptographically random token (use `generateAccessToken()`, ≥128 bits) to `createHostBridge`, remotes must present that token before obtaining the bus. The token is held only in a closure (never a readable property on the public handle) and is distributed to legitimate remotes out-of-band (e.g. via the host's federation mount call).
+
+```typescript
+const accessToken = generateAccessToken();
+createHostBridge({ appId: 'shell-host', bus, remotes: ['remote-orders'], accessToken });
+
+// remote side (Angular):
+provideRemotePlatformBus({ accessToken });
+// or directly:
+const bus = window.__MFE_BRIDGE__.getBus(accessToken);
+```
+
+This prevents trivial, random injection. It does **not** replace the full security model: `allowedPublishers` remains a conventional filter (it only stops accidentally sending with the wrong `source`), and cryptographic or runtime ACL protection is still out of scope.
 
 Backend is ALWAYS source of truth for authorization.
 
@@ -1063,7 +1079,7 @@ pnpm add @lkovari/microfrontend-platform-communication zod
 | Technology | Role | Website |
 | --- | --- | --- |
 | WHATWG DOM Standard | Runtime bus backbone — `EventTarget`, `CustomEvent`, `Event` for in-process pub/sub messaging | [dom.spec.whatwg.org](https://dom.spec.whatwg.org/) |
-| TypeScript | Primary language, strict mode, ES2022 target | [typescriptlang.org](https://www.typescriptlang.org/) |
+| TypeScript | Primary language, ES2022 target; `strict` plus `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `verbatimModuleSyntax`, `isolatedModules`, `forceConsistentCasingInFileNames` | [typescriptlang.org](https://www.typescriptlang.org/) |
 | Zod | Runtime schema validation on the bus boundary | [zod.dev](https://zod.dev/) |
 | tsup | Library bundler (ESM + CJS, dts, tree-shake) | [tsup.egoist.dev](https://tsup.egoist.dev/) |
 | Vitest | Unit and integration test runner | [vitest.dev](https://vitest.dev/) |
@@ -1171,4 +1187,5 @@ This library is designed for Module Federation microfrontends where all remotes 
 ## License
 
 MIT
+
 

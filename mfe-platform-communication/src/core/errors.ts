@@ -22,7 +22,7 @@ export class BusValidationError extends Error {
   }
 }
 
-export type HostBridgeErrorCode = 'conflict' | 'invalid-global' | 'mismatch';
+export type HostBridgeErrorCode = 'conflict' | 'invalid-global' | 'mismatch' | 'unauthorized';
 
 export class HostBridgeError extends Error {
   readonly code: HostBridgeErrorCode;

@@ -1,13 +1,63 @@
 import type { ZodType, ZodTypeAny } from 'zod';
 import type { MessageBase } from '../contracts/message-base.js';
+import type { AckResult, Nack } from '../contracts/envelopes.js';
+import { CommandMessageSchema } from '../schemas/command-message.schema.js';
+import { QueryMessageSchema } from '../schemas/query-message.schema.js';
 import { readBusMessageFromEvent } from './bus-event.js';
 import { createDedupeGate } from './dedupe.js';
 import { createMessageQueue, type DispatchMode } from './dispatcher.js';
-import { BusValidationError } from './errors.js';
+import { BusPolicyError, BusValidationError } from './errors.js';
 import type { ObservabilityAdapter } from './observability.js';
 import { defaultSensitivityPolicy, composePolicies } from './policy.js';
-import type { TopicRegistry } from './registry.js';
+import { TopicRegistry } from './registry.js';
 import { RequestResponseCoordinator } from './request-response.js';
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_ACK_TIMEOUT_MS = 5_000;
+
+function extractQueryTimeoutMs(message: MessageBase): number | undefined {
+  const parsed = QueryMessageSchema.safeParse(message);
+  if (!parsed.success) {
+    return undefined;
+  }
+  return parsed.data.timeoutMs;
+}
+
+function extractExpectedResult(message: MessageBase): string | undefined {
+  const parsed = QueryMessageSchema.safeParse(message);
+  if (!parsed.success) {
+    return undefined;
+  }
+  return parsed.data.expectedResult;
+}
+
+function extractAckTimeoutMs(message: MessageBase): number | undefined {
+  const parsed = CommandMessageSchema.safeParse(message);
+  if (!parsed.success) {
+    return undefined;
+  }
+  return parsed.data.ackTimeoutMs;
+}
+
+function errorToNack(correlationId: string, error: unknown): Nack {
+  const receivedAtUtc = new Date().toISOString();
+  if (error instanceof BusPolicyError || error instanceof BusValidationError) {
+    return {
+      accepted: false,
+      correlationId,
+      errorCode: error.code,
+      message: error.message,
+      receivedAtUtc,
+    };
+  }
+  return {
+    accepted: false,
+    correlationId,
+    errorCode: 'unknown',
+    message: error instanceof Error ? error.message : 'unknown error',
+    receivedAtUtc,
+  };
+}
 
 export type Unsubscribe = () => void;
 
@@ -19,6 +69,7 @@ export type PublishOutcome =
 export interface BusPublisher {
   publish<M extends MessageBase>(message: M): void;
   attemptPublish<M extends MessageBase>(message: M): PublishOutcome;
+  sendCommand<TCmd extends MessageBase>(command: TCmd): Promise<AckResult>;
   request<TReq extends MessageBase>(message: TReq, timeoutMs?: number): Promise<MessageBase>;
   request<TReq extends MessageBase, TRes extends MessageBase>(
     message: TReq,
@@ -54,6 +105,7 @@ export interface CreateBusOptions {
   readonly validators: Readonly<Record<string, ZodTypeAny>>;
   readonly policy?: (message: MessageBase) => void;
   readonly registry?: TopicRegistry;
+  readonly autoRegisterTopics?: boolean;
   readonly allowUnregisteredMessageNames?: boolean;
   readonly messageTtlMs?: number;
   readonly enableDefaultSensitivityPolicy?: boolean;
@@ -78,6 +130,15 @@ function assertIsoWithinTtl(occurredAtUtc: string, ttlMs: number): void {
   }
 }
 
+function resolveRegistry(options: CreateBusOptions): TopicRegistry | undefined {
+  if (options.autoRegisterTopics !== true) {
+    return options.registry;
+  }
+  const registry = options.registry ?? new TopicRegistry();
+  registry.registerFromValidators(options.validators);
+  return registry;
+}
+
 export function createBus(options: CreateBusOptions): Bus {
   const defaultSubscriberId = options.defaultSubscriberId ?? options.appId;
   const target = new EventTarget();
@@ -88,6 +149,8 @@ export function createBus(options: CreateBusOptions): Bus {
   const allowUnregistered = options.allowUnregisteredMessageNames === true;
   const ttlMs = options.messageTtlMs;
   const observability = options.observability;
+
+  const registry = resolveRegistry(options);
 
   const defaultPolicyOn = options.enableDefaultSensitivityPolicy ?? true;
 
@@ -157,7 +220,7 @@ export function createBus(options: CreateBusOptions): Bus {
     }
 
     policy(message);
-    options.registry?.assertCanPublish(message);
+    registry?.assertCanPublish(message);
 
     for (const hook of beforeDeliverHooks) {
       hook(message);
@@ -217,17 +280,56 @@ export function createBus(options: CreateBusOptions): Bus {
       return runPublish(message, false);
     },
 
-    async request<TReq extends MessageBase, TRes extends MessageBase>(
-      message: TReq,
-      timeoutMs = 5_000,
-      responseValidator?: ZodType<TRes>,
-    ): Promise<MessageBase | TRes> {
-      const wait = rr.waitForResponse(message.messageId, timeoutMs).catch((err: unknown) => {
+    async sendCommand<TCmd extends MessageBase>(command: TCmd): Promise<AckResult> {
+      const { correlationId } = command;
+      const ackTimeoutMs = extractAckTimeoutMs(command) ?? DEFAULT_ACK_TIMEOUT_MS;
+      const wait = rr.waitForResponse(command.messageId, ackTimeoutMs).catch((err: unknown) => {
         if (err instanceof BusValidationError && err.code === 'timeout') {
-          observability?.onRequestTimeout(message.messageId);
+          observability?.onRequestTimeout(command.messageId);
         }
         throw err;
       });
+      try {
+        const outcome = runPublish(command, true);
+        if (outcome.status === 'dedupe') {
+          rr.cancelRequest(command.messageId, new BusValidationError('duplicate messageId', 'dedupe'));
+        } else if (outcome.status === 'rejected') {
+          rr.cancelRequest(command.messageId, new BusValidationError('command publish rejected', 'delivery'));
+        }
+      } catch (err: unknown) {
+        const error =
+          err instanceof Error ? err : new BusValidationError('command publish failed', 'delivery');
+        rr.cancelRequest(command.messageId, error);
+        void wait.catch(() => undefined);
+        return errorToNack(correlationId, error);
+      }
+      try {
+        const ack = await wait;
+        return {
+          accepted: true,
+          correlationId: ack.correlationId ?? correlationId,
+          receivedAtUtc: new Date().toISOString(),
+        };
+      } catch (err: unknown) {
+        return errorToNack(correlationId, err);
+      }
+    },
+
+    async request<TReq extends MessageBase, TRes extends MessageBase>(
+      message: TReq,
+      timeoutMs?: number,
+      responseValidator?: ZodType<TRes>,
+    ): Promise<MessageBase | TRes> {
+      const effectiveTimeoutMs =
+        timeoutMs ?? extractQueryTimeoutMs(message) ?? DEFAULT_REQUEST_TIMEOUT_MS;
+      const wait = rr
+        .waitForResponse(message.messageId, effectiveTimeoutMs)
+        .catch((err: unknown) => {
+          if (err instanceof BusValidationError && err.code === 'timeout') {
+            observability?.onRequestTimeout(message.messageId);
+          }
+          throw err;
+        });
       try {
         const outcome = runPublish(message, true);
         if (outcome.status === 'dedupe') {
@@ -256,6 +358,13 @@ export function createBus(options: CreateBusOptions): Bus {
         }
         return parsed.data;
       }
+      const expectedResult = extractExpectedResult(message);
+      if (expectedResult !== undefined && result.messageName !== expectedResult) {
+        throw new BusValidationError(
+          `response messageName must equal expectedResult "${expectedResult}"`,
+          'validation',
+        );
+      }
       return result;
     },
 
@@ -265,7 +374,7 @@ export function createBus(options: CreateBusOptions): Bus {
       subscribeOptions?: BusSubscribeOptions,
     ): Unsubscribe {
       const subscriberId = subscribeOptions?.subscriberId ?? defaultSubscriberId;
-      options.registry?.assertCanSubscribe(messageName, subscriberId);
+      registry?.assertCanSubscribe(messageName, subscriberId);
 
       const listener: Listener = (event: Event) => {
         const detail = readBusMessageFromEvent(event);

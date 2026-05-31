@@ -8,6 +8,7 @@ export function HostBridgeProvider(props: {
   readonly remotes: readonly string[];
   readonly stateSync?: StateSyncAttachOptions;
   readonly onConflict?: HostBridgeConflictPolicy;
+  readonly accessToken?: string;
   readonly children: ReactNode;
 }) {
   const bus = useBus();
@@ -21,12 +22,13 @@ export function HostBridgeProvider(props: {
       remotes: props.remotes,
       ...(props.stateSync ? { stateSync: props.stateSync } : {}),
       ...(props.onConflict ? { onConflict: props.onConflict } : {}),
+      ...(props.accessToken ? { accessToken: props.accessToken } : {}),
     });
     return () => {
       bridgeRef.current?.dispose();
       bridgeRef.current = null;
     };
-  }, [bus, remotesKey, props.stateSync, props.onConflict]);
+  }, [bus, remotesKey, props.stateSync, props.onConflict, props.accessToken]);
 
   return props.children;
 }
