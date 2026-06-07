@@ -13,6 +13,11 @@ export function createBusPlugin(options: CreateBusOptions) {
       const bus = createBus(options);
       app.provide(BusKey, bus);
       rememberBusForApp(app, bus);
+      if (typeof app.onUnmount === 'function') {
+        app.onUnmount(() => {
+          bus.dispose();
+        });
+      }
     },
   };
 }

@@ -183,6 +183,164 @@ describe('attachStateSync', () => {
     bus.dispose();
   });
 
+  it('patch deletes a top-level key when the value is null', () => {
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      validators: {
+        'person:updated': StateMessageSchema,
+      },
+    });
+    const coord = attachStateSync(bus, {
+      enabled: true,
+      initialRevisions: { person: 0 },
+      conflictStrategy: 'last-writer-wins',
+    });
+    bus.publish({
+      messageName: 'person:updated',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-profile',
+      occurredAtUtc: isoNow(),
+      kind: 'state',
+      sensitivity: 'internal',
+      stateKey: 'person',
+      operation: 'replace',
+      revision: 1,
+      payload: { id: 'p-1', firstName: 'Ada', email: 'ada@example.com' },
+    });
+    bus.publish({
+      messageName: 'person:updated',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-profile',
+      occurredAtUtc: isoNow(),
+      kind: 'state',
+      sensitivity: 'internal',
+      stateKey: 'person',
+      operation: 'patch',
+      revision: 2,
+      payload: { email: null },
+    });
+    expect(coord.getSnapshot('person')).toEqual({ id: 'p-1', firstName: 'Ada' });
+    coord.dispose();
+    bus.dispose();
+  });
+
+  it('patch deletes only the targeted nested key when the nested value is null', () => {
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      validators: {
+        'person:updated': StateMessageSchema,
+      },
+    });
+    const coord = attachStateSync(bus, {
+      enabled: true,
+      initialRevisions: { person: 0 },
+      conflictStrategy: 'last-writer-wins',
+    });
+    bus.publish({
+      messageName: 'person:updated',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-profile',
+      occurredAtUtc: isoNow(),
+      kind: 'state',
+      sensitivity: 'internal',
+      stateKey: 'person',
+      operation: 'replace',
+      revision: 1,
+      payload: { user: { firstName: 'Ada', lastName: 'Lovelace' }, age: 30 },
+    });
+    bus.publish({
+      messageName: 'person:updated',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-profile',
+      occurredAtUtc: isoNow(),
+      kind: 'state',
+      sensitivity: 'internal',
+      stateKey: 'person',
+      operation: 'patch',
+      revision: 2,
+      payload: { user: { lastName: null } },
+    });
+    expect(coord.getSnapshot('person')).toEqual({
+      user: { firstName: 'Ada' },
+      age: 30,
+    });
+    coord.dispose();
+    bus.dispose();
+  });
+
+  it('patch cannot store a literal null value (replace is required for that)', () => {
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      validators: {
+        'person:updated': StateMessageSchema,
+      },
+    });
+    const coord = attachStateSync(bus, {
+      enabled: true,
+      initialRevisions: { person: 0 },
+      conflictStrategy: 'last-writer-wins',
+    });
+    bus.publish({
+      messageName: 'person:updated',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-profile',
+      occurredAtUtc: isoNow(),
+      kind: 'state',
+      sensitivity: 'internal',
+      stateKey: 'person',
+      operation: 'replace',
+      revision: 1,
+      payload: { id: 'p-1', nickname: 'Countess' },
+    });
+    bus.publish({
+      messageName: 'person:updated',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-profile',
+      occurredAtUtc: isoNow(),
+      kind: 'state',
+      sensitivity: 'internal',
+      stateKey: 'person',
+      operation: 'patch',
+      revision: 2,
+      payload: { nickname: null },
+    });
+    const patched = coord.getSnapshot('person');
+    expect(patched).toEqual({ id: 'p-1' });
+
+    bus.publish({
+      messageName: 'person:updated',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-profile',
+      occurredAtUtc: isoNow(),
+      kind: 'state',
+      sensitivity: 'internal',
+      stateKey: 'person',
+      operation: 'replace',
+      revision: 3,
+      payload: null,
+    });
+    expect(coord.getSnapshot('person')).toBeNull();
+    coord.dispose();
+    bus.dispose();
+  });
+
   it('reject-if-stale blocks non-monotonic revisions', () => {
     const bus = createBus({
       appId: 'host',

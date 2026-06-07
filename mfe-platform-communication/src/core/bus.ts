@@ -292,9 +292,15 @@ export function createBus(options: CreateBusOptions): Bus {
       try {
         const outcome = runPublish(command, true);
         if (outcome.status === 'dedupe') {
-          rr.cancelRequest(command.messageId, new BusValidationError('duplicate messageId', 'dedupe'));
+          rr.cancelRequest(
+            command.messageId,
+            new BusValidationError('duplicate messageId', 'dedupe'),
+          );
         } else if (outcome.status === 'rejected') {
-          rr.cancelRequest(command.messageId, new BusValidationError('command publish rejected', 'delivery'));
+          rr.cancelRequest(
+            command.messageId,
+            new BusValidationError('command publish rejected', 'delivery'),
+          );
         }
       } catch (err: unknown) {
         const error =

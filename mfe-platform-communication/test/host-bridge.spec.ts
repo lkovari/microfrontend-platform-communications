@@ -313,6 +313,89 @@ describe('createHostBridge', () => {
     bus.dispose();
   });
 
+  it('onConflict return-existing throws when appId differs', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const first = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['a'],
+      onConflict: 'return-existing',
+    });
+    expect(() =>
+      createHostBridge({
+        appId: 'other-host',
+        bus,
+        remotes: ['a'],
+        onConflict: 'return-existing',
+      }),
+    ).toThrow(HostBridgeError);
+    first.dispose();
+    bus.dispose();
+  });
+
+  it('onConflict return-existing throws when bound to a different bus instance', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const otherBus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const first = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['a'],
+      onConflict: 'return-existing',
+    });
+    expect(() =>
+      createHostBridge({
+        appId: 'shell-host',
+        bus: otherBus,
+        remotes: ['a'],
+        onConflict: 'return-existing',
+      }),
+    ).toThrow(HostBridgeError);
+    first.dispose();
+    bus.dispose();
+    otherBus.dispose();
+  });
+
+  it('onConflict return-existing throws when stateSync options differ', () => {
+    const bus = createBus({
+      appId: 'shell-host',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    const first = createHostBridge({
+      appId: 'shell-host',
+      bus,
+      remotes: ['a'],
+      stateSync: { enabled: true, initialRevisions: { person: 0 } },
+      onConflict: 'return-existing',
+    });
+    expect(() =>
+      createHostBridge({
+        appId: 'shell-host',
+        bus,
+        remotes: ['a'],
+        onConflict: 'return-existing',
+      }),
+    ).toThrow(HostBridgeError);
+    first.dispose();
+    bus.dispose();
+  });
+
   it('onConflict replace disposes the previous handle and sets a new bridge', () => {
     const bus1 = createBus({
       appId: 'shell-host',

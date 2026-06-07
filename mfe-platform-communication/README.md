@@ -1,6 +1,6 @@
 # @lkovari/microfrontend-platform-communication
 
-**Status:** Proof of Concept (`0.x`). Production readiness is tracked in [platform-communication-rfc.md](platform-communication-rfc.md) section **1.5**. Target production release: `1.0.0` when P1–P2 checklist items are complete.
+**Status:** Proof of Concept (`0.x`). Production readiness is tracked in an RFC. Target production release: `1.0.0` when my internal checklist items are complete.
 
 The publishable package lives in [`mfe-platform-communication/`](mfe-platform-communication/) as `@lkovari/microfrontend-platform-communication` ([npm](https://www.npmjs.com/package/@lkovari/microfrontend-platform-communication)).
 
@@ -16,7 +16,7 @@ Framework-agnostic, host-mediated messaging for native-federated microfrontends 
 - **Host-mediated routing** — the host owns routing (`target` vs broadcast); remotes never talk directly to each other.
 - **Zod validation at the boundary** — every message is validated against its schema on publish; `validationDescriptor` validates shape only (field rules are tooling metadata).
 - **Dedupe, TTL, correlation** — duplicate `messageId` drop, message expiry, and `correlationId` / `causationId` tracking. `attemptPublish` / bridge `tryPublish` return explicit `Nack`s (including `errorCode: 'dedupe'`).
-- **Request/response** — `bus.request()` correlates a response to its request by `causationId`; `failFastOnDispatchError` avoids the silent 5s timeout when `onDispatchError` swallows publish errors.
+- **Request/response** — `bus.request()` correlates a response to its request by `causationId`; the responder **must** set `response.causationId === request.messageId` (the bus enforces this at runtime and rejects mismatches). `failFastOnDispatchError` avoids the silent 5s timeout when `onDispatchError` swallows publish errors.
 - **Observability hooks** — optional `ObservabilityAdapter` (+ `ConsoleObservabilityAdapter`) for publish/deliver/error/timeout.
 - **TopicRegistry ACL + versioning** — per-`messageName` `allowedPublishers` / `allowedSubscribers` and `min`/`maxMessageVersion`.
 - **State sync** — host-owned shared state with revisions and `replace` / `patch` / `remove` / `reset` operations, plus `getSnapshot()` for late-joining remotes.
@@ -711,9 +711,11 @@ Synchronized shared state under a key, with explicit revisions and an operation 
 | Operation | Meaning |
 | --- | --- |
 | `replace` | Substitute the entire value for `stateKey` with `payload`. |
-| `patch` | Apply a partial update; `payload` is typically a merge or JSON-patch style delta (by convention). |
+| `patch` | Apply a recursive (deep) merge-patch: nested objects are merged key-by-key, and a `null` value **deletes** that key (RFC 7396-style). To store a literal `null`, use `replace`. |
 | `remove` | Drop the value for `stateKey` (payload may be empty or carry metadata). |
 | `reset` | Restore initial or default state for that key. |
+
+> **`patch` semantics:** `applyPatch` (`src/core/state-sync.ts`) performs a deep merge-patch via `mergePatch`. Nested objects are merged recursively; a `null` value removes the corresponding key rather than setting it to `null`. If you need to persist a literal `null`, send a `replace` instead.
 
 Typical uses: shared entity snapshot across remotes, host-managed session-scoped data with revision checks.
 
@@ -1029,6 +1031,15 @@ pnpm add @lkovari/microfrontend-platform-communication zod
 - `request validates response when validator is provided` - verifies response schema validation path.
 - `TTL rejects expired and invalid timestamps` - verifies TTL rejection for invalid/expired messages.
 - `TTL accepts future timestamps and non-expired messages` - verifies TTL acceptance for valid timing.
+- `blocks restricted messages by default via the sensitivity policy` - verifies default sensitivity policy denial.
+- `allows restricted messages when the default sensitivity policy is disabled` - verifies the `enableDefaultSensitivityPolicy: false` escape hatch.
+- `runs a custom policy and composes it with the default sensitivity policy` - verifies custom + default policy composition.
+- `throws when publishing a messageName with no registered validator` - verifies the unregistered-topic guard.
+- `allows unregistered messageNames when allowUnregisteredMessageNames is true` - verifies the opt-in permissive mode.
+- `disposing the bus rejects an in-flight request` - verifies pending requests reject on `dispose()` instead of hanging.
+- `resolves concurrent requests independently by causationId` - verifies multi-flight request correlation.
+- `sendCommand returns a validation Nack when the command fails schema validation` - verifies command validation error path.
+- `sendCommand returns a dedupe Nack for a duplicate command messageId` - verifies command dedupe error path.
 
 ### `test/host-bridge.spec.ts`
 - `exposes window.__MFE_BRIDGE__ with versioned handshake` - verifies bridge registration and protocol metadata.
@@ -1045,13 +1056,25 @@ pnpm add @lkovari/microfrontend-platform-communication zod
 - `throws when window has an invalid global and onConflict is throw` - verifies invalid global handling in throw mode.
 - `onConflict replace removes invalid value from window and creates a real bridge` - verifies invalid global recovery in replace mode.
 - `isValidMfeBridgeHandle rejects plain objects and accepts real handles` - verifies bridge-handle type guard.
+- `onConflict return-existing throws when appId differs` - verifies appId mismatch protection in return-existing mode.
+- `onConflict return-existing throws when bound to a different bus instance` - verifies bus-instance mismatch protection.
+- `onConflict return-existing throws when stateSync options differ` - verifies state-sync option mismatch protection.
 
 ### `test/state-sync.spec.ts`
 - `applies replace, patch, remove, reset` - verifies core state operation flow.
 - `patch performs deep object merge for nested fields` - verifies nested merge behavior.
 - `patch follows merge-patch semantics for non-object payloads` - verifies non-object replacement semantics.
+- `patch deletes a top-level key when the value is null` - verifies RFC 7396-style `null`-delete at the top level.
+- `patch deletes only the targeted nested key when the nested value is null` - verifies scoped nested `null`-delete.
+- `patch cannot store a literal null value (replace is required for that)` - verifies `null` cannot be persisted via `patch`.
 - `reject-if-stale blocks non-monotonic revisions` - verifies stale revision protection.
 - `custom conflict strategy can reject` - verifies extensible conflict strategy handling.
+
+### `test/dedupe.spec.ts`
+- `lets a new id pass and drops a repeat within the window` - verifies in-window deduplication.
+- `allows the same id again once the window has elapsed since first sighting` - verifies window expiry from first sighting.
+- `tracks distinct ids independently` - verifies per-id isolation in the dedupe gate.
+- `re-accepts the same messageId after the dedupe window elapses` - verifies bus-level dedupe expiry with fake timers.
 
 ### `test/validation.spec.ts`
 - `accepts valid envelopes` - verifies baseline schema acceptance.
@@ -1072,6 +1095,8 @@ pnpm add @lkovari/microfrontend-platform-communication zod
 - `React HostBridgeProvider does not recreate bridge when remotes values are unchanged` - verifies React bridge stability.
 - `React useSubscribe uses the latest inline handler closure after rerender` - verifies React latest closure behavior.
 - `Vue useSubscribe cleans up on unmount` - verifies Vue lifecycle cleanup.
+- `React BusProvider disposes the bus when the provider unmounts` - verifies React provider bus teardown.
+- `Vue createBusPlugin disposes the bus when the app unmounts` - verifies Vue plugin bus teardown.
 - `two subscribers on one bus can model remote targeting` - verifies targeting model across subscribers.
 
 ## Tech Information
@@ -1098,6 +1123,31 @@ pnpm add @lkovari/microfrontend-platform-communication zod
 | jsdom | DOM environment for Vitest adapter tests | [github.com/jsdom/jsdom](https://github.com/jsdom/jsdom) |
 | zod-to-json-schema | Contract snapshot export (Zod → JSON Schema) | [github.com/StefanTerdell/zod-to-json-schema](https://github.com/StefanTerdell/zod-to-json-schema) |
 | npm | Public registry for package publishing | [npmjs.com](https://www.npmjs.com/) |
+
+## Future improvements
+
+Planned, not yet implemented. These are forward-looking ideas; the public API and behavior described elsewhere in this document are the source of truth for the current release.
+
+### 1. Switchable messaging transport (runtime configuration)
+
+Today the bus is built on the **WHATWG DOM** primitives (`EventTarget` + `CustomEvent`), which require all participants to share the same JavaScript realm (same page, same thread) — see the [Web Messaging Standards appendix](#appendix-web-messaging-standards--whatwg-dom-vs-w3c-web-messaging). This is optimal for Module Federation remotes loaded into one page, but it cannot cross browsing contexts.
+
+The goal is to make the messaging technology a **runtime configuration option** so the same contracts and bus API can run across context boundaries:
+
+- **Default (current):** WHATWG `EventTarget` / `CustomEvent` — zero-copy, synchronous/microtask delivery within one realm.
+- **Cross-context:** **W3C Web Messaging** (`postMessage`, `MessageChannel` / `MessagePort`, `BroadcastChannel`) for remotes that live in a **separate browsing context** — iframes, popups, Web/Service Workers, or other tabs on the same origin.
+
+The transport would be selected per bus instance (e.g. a `transport` option on `createBus()` / `createHostBridge()`), behind a small transport abstraction so `publish` / `subscribe` / `request` / `sendCommand` stay identical regardless of the underlying mechanism. The entire library — contracts, validation, dedupe, TTL, correlation, request/response — is intended to be transport-agnostic, with structured-clone constraints (no functions/class instances, async-only delivery) documented for the cross-context modes.
+
+### 2. Extract contracts and schemas into a dedicated library
+
+The message contracts (`src/contracts`), Zod schemas (`src/schemas`), and shared types currently ship inside this runtime package. The plan is to **extract them into a separate, standalone library** (for example `@lkovari/microfrontend-platform-contracts`) that:
+
+- can be depended on by producers and consumers **without** pulling in the bus/runtime,
+- is **versioned independently** (its own SemVer + contract-snapshot governance), so contract evolution is decoupled from runtime changes,
+- aligns with the `model-*` / `contracts-*` library role and keeps cross-microfrontend coupling minimal.
+
+The runtime package would then depend on this contracts library, preserving the current public exports for backward compatibility.
 
 ## Appendix: Web Messaging Standards — WHATWG DOM vs W3C Web Messaging
 

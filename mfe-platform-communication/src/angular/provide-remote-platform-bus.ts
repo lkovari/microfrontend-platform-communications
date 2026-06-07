@@ -6,9 +6,7 @@ export interface RemotePlatformBusOptions {
   readonly accessToken?: string;
 }
 
-export function provideRemotePlatformBus(
-  options?: RemotePlatformBusOptions,
-): EnvironmentProviders {
+export function provideRemotePlatformBus(options?: RemotePlatformBusOptions): EnvironmentProviders {
   return makeEnvironmentProviders([
     {
       provide: BUS_TOKEN,

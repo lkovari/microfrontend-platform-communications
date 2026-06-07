@@ -227,6 +227,49 @@ describe('framework adapters', () => {
     expect(count).toBe(1);
   });
 
+  it('React BusProvider disposes the bus when the provider unmounts', () => {
+    const busRef: { current: Bus | null } = { current: null };
+
+    function Probe() {
+      busRef.current = useBus();
+      return null;
+    }
+
+    const ui = render(
+      createElement(BusProvider, {
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: { 'orders:filters-changed': OrdersFiltersEventSchema },
+        children: createElement(Probe),
+      }),
+    );
+
+    const bus = busRef.current;
+    if (bus === null) {
+      throw new Error('expected bus');
+    }
+    let count = 0;
+    bus.subscribe('orders:filters-changed', () => {
+      count += 1;
+    });
+
+    ui.unmount();
+
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'x',
+      occurredAtUtc: new Date().toISOString(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(count).toBe(0);
+  });
+
   it('React HostBridgeProvider does not recreate bridge when remotes values are unchanged', () => {
     function Probe(props: { readonly tick: number }) {
       return createElement(HostBridgeProvider, {
@@ -374,6 +417,56 @@ describe('framework adapters', () => {
       payload: { filter: 'open' },
     });
     expect(count.value).toBe(1);
+  });
+
+  it('Vue createBusPlugin disposes the bus when the app unmounts', () => {
+    const busRef: { current: Bus | null } = { current: null };
+
+    const Root = defineComponent({
+      setup() {
+        busRef.current = useVueBus();
+        return {};
+      },
+      template: '<span />',
+    });
+
+    const el = document.createElement('div');
+    const app = createApp(Root);
+    app.use(
+      createBusPlugin({
+        appId: 'shell',
+        dispatch: 'sync',
+        validators: {
+          'orders:filters-changed': OrdersFiltersEventSchema,
+        },
+      }),
+    );
+    app.mount(el);
+
+    const bus = busRef.current;
+    if (bus === null) {
+      throw new Error('expected bus');
+    }
+    let count = 0;
+    bus.subscribe('orders:filters-changed', () => {
+      count += 1;
+    });
+
+    app.unmount();
+
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'x',
+      occurredAtUtc: new Date().toISOString(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(count).toBe(0);
   });
 
   it('two subscribers on one bus can model remote targeting', () => {

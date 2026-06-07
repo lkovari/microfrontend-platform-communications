@@ -1188,6 +1188,228 @@ describe('createBus', () => {
     infoSpy.mockRestore();
     bus.dispose();
   });
+
+  it('blocks restricted messages by default via the sensitivity policy', () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    expect(() =>
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'remote-orders',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'restricted',
+        payload: { filter: 'open' },
+      }),
+    ).toThrow(BusPolicyError);
+    bus.dispose();
+  });
+
+  it('allows restricted messages when the default sensitivity policy is disabled', () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      enableDefaultSensitivityPolicy: false,
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    let count = 0;
+    bus.subscribe('orders:filters-changed', () => {
+      count += 1;
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'restricted',
+      payload: { filter: 'open' },
+    });
+    expect(count).toBe(1);
+    bus.dispose();
+  });
+
+  it('runs a custom policy and composes it with the default sensitivity policy', () => {
+    const customPolicy = vi.fn();
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      policy: customPolicy,
+      validators: {
+        'orders:filters-changed': OrdersFiltersEventSchema,
+      },
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'orders:filters-changed',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'orders.filters-changed',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(customPolicy).toHaveBeenCalledTimes(1);
+    expect(() =>
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:filters-changed',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'remote-orders',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'orders.filters-changed',
+        sensitivity: 'restricted',
+        payload: { filter: 'open' },
+      }),
+    ).toThrow(BusPolicyError);
+    expect(customPolicy).toHaveBeenCalledTimes(1);
+    bus.dispose();
+  });
+
+  it('throws when publishing a messageName with no registered validator', () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      validators: {},
+    });
+    expect(() =>
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'unknown:topic',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'remote-orders',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'unknown.topic',
+        sensitivity: 'public',
+        payload: { filter: 'open' },
+      }),
+    ).toThrow(BusValidationError);
+    bus.dispose();
+  });
+
+  it('allows unregistered messageNames when allowUnregisteredMessageNames is true', () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'sync',
+      validators: {},
+      allowUnregisteredMessageNames: true,
+    });
+    let count = 0;
+    bus.subscribe('unknown:topic', () => {
+      count += 1;
+    });
+    bus.publish<EventMessage<{ filter: string }>>({
+      messageName: 'unknown:topic',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'remote-orders',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'unknown.topic',
+      sensitivity: 'public',
+      payload: { filter: 'open' },
+    });
+    expect(count).toBe(1);
+    bus.dispose();
+  });
+
+  it('disposing the bus rejects an in-flight request', async () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'microtask',
+      validators: {
+        'q:hang': OrdersFiltersEventSchema,
+      },
+    });
+    const req: EventMessage<{ filter: string }> = {
+      messageName: 'q:hang',
+      messageVersion: 1,
+      messageId: crypto.randomUUID(),
+      correlationId: crypto.randomUUID(),
+      source: 'a',
+      occurredAtUtc: isoNow(),
+      kind: 'event',
+      eventKind: 'q.hang',
+      sensitivity: 'public',
+      payload: { filter: 'ask' },
+    };
+    const pending = bus.request(req, 1000);
+    bus.dispose();
+    await expect(pending).rejects.toThrow('bus disposed');
+  });
+
+  it('resolves concurrent requests independently by causationId', async () => {
+    const bus = createBus({
+      appId: 'a',
+      dispatch: 'microtask',
+      validators: {
+        'q:multi': OrdersFiltersEventSchema,
+        'q:multi:result': OrdersFiltersEventSchema,
+      },
+    });
+    bus.subscribe('q:multi', (m) => {
+      const echo = expectParsedMessage(m, OrdersFiltersEventSchema).payload.filter;
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'q:multi:result',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: m.correlationId,
+        causationId: m.messageId,
+        source: 'b',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'q.multi.result',
+        sensitivity: 'public',
+        payload: { filter: echo },
+      });
+    });
+    function makeRequest(filter: string): EventMessage<{ filter: string }> {
+      return {
+        messageName: 'q:multi',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: crypto.randomUUID(),
+        source: 'a',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'q.multi',
+        sensitivity: 'public',
+        payload: { filter },
+      };
+    }
+    const [r1, r2, r3] = await Promise.all([
+      bus.request(makeRequest('one'), 1000, OrdersFiltersEventSchema),
+      bus.request(makeRequest('two'), 1000, OrdersFiltersEventSchema),
+      bus.request(makeRequest('three'), 1000, OrdersFiltersEventSchema),
+    ]);
+    expect([r1.payload.filter, r2.payload.filter, r3.payload.filter]).toEqual([
+      'one',
+      'two',
+      'three',
+    ]);
+    bus.dispose();
+  });
 });
 
 describe('createBus kind-aware behavior', () => {
@@ -1256,6 +1478,78 @@ describe('createBus kind-aware behavior', () => {
     };
     const nack = await bus.sendCommand(command);
     expect(nack).toMatchObject({ accepted: false, errorCode: 'timeout' });
+    bus.dispose();
+  });
+
+  it('sendCommand returns a validation Nack when the command fails schema validation', async () => {
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      validators: {
+        'orders:refresh': CommandMessageSchema,
+      },
+    });
+    const command: CommandMessage<{ force: boolean }> = {
+      messageName: 'orders:refresh',
+      messageVersion: 1,
+      messageId: 'not-a-uuid',
+      correlationId: crypto.randomUUID(),
+      source: 'host',
+      occurredAtUtc: isoNow(),
+      kind: 'command',
+      commandName: 'orders.refresh',
+      sensitivity: 'internal',
+      payload: { force: true },
+      ackTimeoutMs: 50,
+    };
+    const nack = await bus.sendCommand(command);
+    expect(nack).toMatchObject({ accepted: false, errorCode: 'validation' });
+    bus.dispose();
+  });
+
+  it('sendCommand returns a dedupe Nack for a duplicate command messageId', async () => {
+    const bus = createBus({
+      appId: 'host',
+      dispatch: 'sync',
+      dedupe: { enabled: true, windowMs: 5_000 },
+      validators: {
+        'orders:refresh': CommandMessageSchema,
+        'orders:refresh:ack': OrdersFiltersEventSchema,
+      },
+    });
+    bus.subscribe('orders:refresh', (m) => {
+      bus.publish<EventMessage<{ filter: string }>>({
+        messageName: 'orders:refresh:ack',
+        messageVersion: 1,
+        messageId: crypto.randomUUID(),
+        correlationId: m.correlationId,
+        causationId: m.messageId,
+        source: 'remote-orders',
+        occurredAtUtc: isoNow(),
+        kind: 'event',
+        eventKind: 'orders.refresh.ack',
+        sensitivity: 'public',
+        payload: { filter: 'ok' },
+      });
+    });
+    const messageId = crypto.randomUUID();
+    const command: CommandMessage<{ force: boolean }> = {
+      messageName: 'orders:refresh',
+      messageVersion: 1,
+      messageId,
+      correlationId: crypto.randomUUID(),
+      source: 'host',
+      occurredAtUtc: isoNow(),
+      kind: 'command',
+      commandName: 'orders.refresh',
+      sensitivity: 'internal',
+      payload: { force: true },
+      ackTimeoutMs: 1000,
+    };
+    const first = await bus.sendCommand(command);
+    expect(first.accepted).toBe(true);
+    const second = await bus.sendCommand({ ...command, correlationId: crypto.randomUUID() });
+    expect(second).toMatchObject({ accepted: false, errorCode: 'dedupe' });
     bus.dispose();
   });
 
